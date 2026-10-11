@@ -9,7 +9,7 @@
     "ios": "expo start --ios --port 8097",
     "web": "expo start --web --port 8097",
     "check": "tsc --noEmit",
-    "export:web": "expo export --platform web"
+    "export:web": "expo export --clear --platform web"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

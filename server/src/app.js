@@ -10,6 +10,8 @@ import { sessionFor,totals,recordSale,saleDetail,closeSession,closureDetail,fail
 import {storedPdf,generateDocuments} from './documents.js';
 export function createApp(db) {
  const app=express();app.disable('x-powered-by');app.use(helmet());
+ // Detrás de un proxy (Railway, Render, Nginx) indica cuántos saltos confiar para que el límite de login use la IP real.
+ if(process.env.TRUST_PROXY)app.set('trust proxy',/^\d+$/.test(process.env.TRUST_PROXY)?Number(process.env.TRUST_PROXY):process.env.TRUST_PROXY);
  const origins=(process.env.CORS_ORIGINS||'http://localhost:8097,http://127.0.0.1:8097').split(',').map(s=>s.trim());
  app.use((req,res,next)=>{
   const origin=req.headers.origin;
