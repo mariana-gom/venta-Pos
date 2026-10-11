@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Venta POS",
+    "name": "DANNY'S POS",
     "slug": "venta-pos",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,7 +20,10 @@
       "expo-secure-store"
     ],
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/brand/dannys-logo.png",
+      "name": "DANNY'S POS",
+      "themeColor": "#1E7A3C"
     },
     "platforms": [
       "android",

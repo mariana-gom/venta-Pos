@@ -6,11 +6,21 @@ import * as Print from 'expo-print';
 import type {User} from './types';
 let token='';
 export const API_URL=(process.env.EXPO_PUBLIC_API_URL||'http://localhost:4317').replace(/\/$/,'');
-export class ApiError extends Error { constructor(message:string,public status:number){super(message);} }
+/** Error con mensaje para el usuario y detalle técnico para diagnóstico (código, ruta). */
+export class ApiError extends Error { constructor(message:string,public status:number,public detail=''){super(message);} }
 export async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{
  let response:Response;
- try{response=await fetch(API_URL+'/api'+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});}catch{throw new ApiError('No hay conexión con el servidor. No confirmes otra venta: reintenta con la misma referencia.',0);}
- const data=await response.json();if(!response.ok)throw new ApiError(data.error||'No se pudo completar la operación.',response.status);return data;
+ try{response=await fetch(API_URL+'/api'+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});}
+ catch(e){throw new ApiError('No hay conexión con el servidor. Revisa el internet o el Wi-Fi e inténtalo nuevamente.',0,`${method} ${path} · ${e instanceof Error?e.message:String(e)} · ${API_URL}`);}
+ // Un proxy o servidor caído puede responder HTML: nunca mostrar un error de lectura JSON al usuario.
+ let data:any=null;try{data=await response.json();}catch{}
+ if(!response.ok){
+  const fallback=response.status>=500?'El servidor no pudo completar la operación. Inténtalo nuevamente en unos segundos.':'No se pudo completar la operación.';
+  const fields=Array.isArray(data?.fields)?' · '+data.fields.map((f:{field:string;message:string})=>`${f.field}: ${f.message}`).join('; '):'';
+  throw new ApiError(data?.error||fallback,response.status,`HTTP ${response.status} · ${method} ${path}${fields}`);
+ }
+ if(data===null)throw new ApiError('La respuesta del servidor no es válida.',response.status,`${method} ${path} · respuesta sin JSON`);
+ return data;
 }
 export async function restoreSession():Promise<User|null>{
  token=Platform.OS==='web'?(sessionStorage.getItem('pos-token')||''):(await SecureStore.getItemAsync('pos-token')||'');
@@ -23,16 +33,23 @@ export async function signIn(username:string,password:string){
 }
 export async function forgetSession(){token='';if(Platform.OS==='web')sessionStorage.removeItem('pos-token');else await SecureStore.deleteItemAsync('pos-token');}
 export async function signOut(){await api('/auth/logout','POST',{});await forgetSession();}
+/** Descarga el PDF guardado de la venta/cierre (nunca se recalcula) y lo abre, comparte o imprime. */
 export async function documentAction(path:string,width:58|80,action:'share'|'print'|'open'){
- const url=`${API_URL}/api${path}/pdf?width=${width}`;
+ const url=`${API_URL}/api${path}/pdf?width=${width}`;const name=`comprobante-${path.split('/').pop()?.slice(0,8)}-${width}mm.pdf`;
  if(Platform.OS==='web'){
-  const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new Error('No se pudo descargar el PDF.');
-  const blob=await response.blob(),uri=URL.createObjectURL(blob);const a=document.createElement('a');a.href=uri;a.download=`comprobante-${width}mm.pdf`;a.click();setTimeout(()=>URL.revokeObjectURL(uri),60000);return;
+  const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new ApiError('No se pudo descargar el comprobante. Inténtalo nuevamente.',response.status,`HTTP ${response.status} · GET ${path}/pdf`);
+  const blob=await response.blob();
+  if(action==='share'){const file=new File([blob],name,{type:'application/pdf'});if(navigator.canShare?.({files:[file]})){try{await navigator.share({files:[file],title:'Comprobante'});}catch(e){if((e as Error).name!=='AbortError')throw e;}return;}}
+  const uri=URL.createObjectURL(blob);
+  // Imprimir abre el visor PDF del navegador (botón imprimir al 100 %); abrir/compartir sin soporte descarga el archivo.
+  // Si el navegador bloquea la ventana emergente, se descarga el archivo para imprimirlo desde el visor.
+  if(action!=='print'||!window.open(uri,'_blank')){const a=document.createElement('a');a.href=uri;a.download=name;a.click();}
+  setTimeout(()=>URL.revokeObjectURL(uri),60000);return;
  }
- const result=await FileSystem.downloadAsync(url,FileSystem.cacheDirectory+`comprobante-${Date.now()}.pdf`,{headers:{Authorization:`Bearer ${token}`}});
- if(result.status!==200)throw new Error('No se pudo descargar el PDF.');
+ const result=await FileSystem.downloadAsync(url,FileSystem.cacheDirectory+name,{headers:{Authorization:`Bearer ${token}`}});
+ if(result.status!==200)throw new ApiError('No se pudo descargar el comprobante. Revisa la conexión e inténtalo nuevamente.',result.status,`HTTP ${result.status} · GET ${path}/pdf`);
  if(action==='print')await Print.printAsync({uri:result.uri});
- else{if(!await Sharing.isAvailableAsync())throw new Error('El dispositivo no permite compartir archivos.');await Sharing.shareAsync(result.uri,{mimeType:'application/pdf',UTI:'com.adobe.pdf',dialogTitle:action==='open'?'Abrir o guardar comprobante':'Compartir comprobante'});}
+ else{if(!await Sharing.isAvailableAsync())throw new Error('Este celular no permite compartir archivos.');await Sharing.shareAsync(result.uri,{mimeType:'application/pdf',UTI:'com.adobe.pdf',dialogTitle:action==='open'?'Abrir o guardar comprobante':'Compartir comprobante'});}
 }
 export async function readPending(userId:string):Promise<Record<string,unknown>|null>{
  const key=`pos-pending-${userId}`;const value=Platform.OS==='web'?localStorage.getItem(key):await SecureStore.getItemAsync(key);return value?JSON.parse(value):null;

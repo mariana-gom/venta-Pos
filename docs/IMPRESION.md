@@ -2,6 +2,12 @@
 
 Configuración confirmada por el usuario: celular Android e impresora con papel de 80 mm. Este es el ancho predeterminado para nuevas instalaciones. Impresora indicada por el usuario: genérica, modelo MTP-3. La variante de hardware, firmware y transporte Bluetooth aún requieren prueba.
 
+## Diseño del comprobante
+
+El comprobante incluye el logo oficial en versión de impresión (`server/assets/dannys-logo-print.png`, escala de grises sobre blanco generada desde el original con `scripts/logo-print.mjs`), nombre comercial, solo los datos fiscales configurados (NIT, dirección, ciudad, teléfono), número corto de venta (`#0025`), fecha y hora separadas, vendedor, caja corta (`#3`, en vez del UUID), cliente y ciudad. Cada producto muestra su nombre en mayúsculas y, debajo, `cantidad × precio` a la izquierda y el subtotal a la derecha; si no caben en una línea, el subtotal baja alineado a la derecha. Total resaltado entre líneas dobles, método de pago y el aviso “Comprobante de venta. No es factura electrónica.” Sin fondos oscuros.
+
+Márgenes laterales calculados para el área imprimible habitual: 5 mm en papel de 58 mm (48 mm útiles) y 4 mm en papel de 80 mm (72 mm útiles). La app muestra una vista previa con los datos guardados de la venta antes de imprimir. Los datos del negocio se congelan en la venta: editarlos después no cambia los comprobantes ya emitidos, y los PDF guardados de ventas anteriores conservan su diseño original.
+
 La API genera PDF con texto seleccionable mediante PDFKit. El ancho físico es exactamente 58 o 80 mm (164,409 o 226,772 puntos); la altura depende del contenido. Los tickets extensos se dividen si superan el límite de página PDF. No se crean hojas carta. Las copias de cierre usan el snapshot original, sin recalcular ni incorporar modificaciones posteriores del negocio.
 
 En Android/iOS se descarga el archivo con autenticación y se entrega a expo-sharing o expo-print. Abrir/guardar muestra el selector del sistema para elegir visor, Archivos o una aplicación compatible. En web se descarga el archivo, que se abre con el visor PDF del navegador.
