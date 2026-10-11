@@ -2,25 +2,32 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Platform, Pressable, Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import * as Crypto from 'expo-crypto';
-import {api, ApiError, documentAction, readPending, savePending} from './api';
+import {api, ApiError, readPending, savePending} from './api';
+import {nextProvisional, printLocal, saleTitle, type QueuedSale} from './offline';
 import {Badge, Banner, Button, Card, Choice, Empty, Field, FooterBar, IconButton, Loading, Page, SearchBar, Segmented, Sheet, Stepper, colors, cop, fitSize, lineSubtotal, moneyToCents, normalizeSearch, parseQuantity, quantityForApi, quantityLabel, quantityText, receiptNumber, styles, unitLabel, useBack} from './ui';
-import type {CashSession, Product, Customer, Platform as PayPlatform, CartLine, Sale} from './types';
+import type {CashSession, Product, Customer, Platform as PayPlatform, CartLine, Sale, Settings, User} from './types';
 import type {Run} from '../App';
-type Props = {userId: string; active: boolean; session?: CashSession; products: Product[]; customers: Customer[]; platforms: PayPlatform[]; paperWidth: 58 | 80; refresh: () => Promise<void>; run: Run; busy: boolean; onViewSale: (sale: Sale) => void; onOpenCash: () => void};
+type Props = {user: User; settings: Settings; enqueue: (entry: QueuedSale) => Promise<void>; dequeue: (key: string) => Promise<void>; onLocalCustomer: (c: Customer) => void; active: boolean; session?: CashSession; products: Product[]; customers: Customer[]; platforms: PayPlatform[]; paperWidth: 58 | 80; refresh: () => Promise<void>; run: Run; busy: boolean; onViewSale: (sale: Sale) => void; onOpenCash: () => void};
 type SaleView = 'catalog' | 'cart' | 'pay';
 const KG_PRESETS = ['0,25', '0,5', '1', '1,5', '2', '3'];
 const UNIT_PRESETS = ['1', '2', '3', '6', '12', '24'];
 const PAGE = 30;
 
-export function SaleScreen({userId, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
+export function SaleScreen({user, settings, enqueue, dequeue, onLocalCustomer, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
   const [cart, setCart] = useState<CartLine[]>([]), [query, setQuery] = useState(''), [limit, setLimit] = useState(PAGE), [view, setView] = useState<SaleView>('catalog');
   const [customer, setCustomer] = useState(''), [pickCustomer, setPickCustomer] = useState(false), [customerSearch, setCustomerSearch] = useState(''), [newCustomer, setNewCustomer] = useState(false), [name, setName] = useState(''), [city, setCity] = useState('');
   const [editing, setEditing] = useState<Product | null>(null), [qtyText, setQtyText] = useState('');
   const [pay, setPay] = useState(''), [received, setReceived] = useState('');
-  const [ready, setReady] = useState(false), [pending, setPending] = useState<Record<string, unknown> | null>(null), [done, setDone] = useState<{sale: Sale; change: number | null} | null>(null);
+  const userId = user.id;
+  const [ready, setReady] = useState(false), [done, setDone] = useState<{sale: Sale; change: number | null; offline: boolean} | null>(null);
   // Bloqueo síncrono: un doble toque no alcanza a crear dos ventas aunque React aún no haya deshabilitado el botón.
   const confirming = useRef(false);
-  useEffect(() => { run(async () => { setPending(await readPending(userId)); setReady(true); }); }, [userId]);
+  // Una confirmación pendiente de la versión anterior pasa a la cola de ruta (misma referencia: no se duplica).
+  useEffect(() => { run(async () => {
+    const old = await readPending(userId);
+    if (old) { await enqueue({key: String(old.request_key), provisional: 'Pendiente', created_at: new Date().toISOString(), body: old, sale: {id: String(old.request_key), number: 0, session_id: String(old.session_id), seller_id: userId, customer_id: String(old.customer_id), created_at: new Date().toISOString(), total_cents: 0, snapshot: {business_name: settings.business_name, customer_name: 'Venta pendiente', customer_city: '', seller_name: user.name, offline_ref: 'Pendiente'}, items: [], payments: []}}); await savePending(userId, null); }
+    setReady(true);
+  }); }, [userId]);
   // Al actualizar el catálogo, el carrito toma precios y existencias vigentes (la API rechaza precios desactualizados).
   useEffect(() => { setCart(lines => lines.map(l => ({...l, product: products.find(p => p.id === l.product.id) || l.product}))); }, [products]);
   // En web, advertir antes de cerrar o recargar con una venta sin terminar.
@@ -80,21 +87,31 @@ export function SaleScreen({userId, active, session, products, customers, platfo
   function reset() { setCart([]); setPay(''); setReceived(''); setView('catalog'); setQuery(''); setCustomer(''); setLimit(PAGE); }
   async function confirm() {
     if (confirming.current) return;
-    if (!valid && !pending) throw new Error('Completa el cliente, las cantidades y el método de pago antes de confirmar.');
+    if (!valid) throw new Error('Completa el cliente, las cantidades y el método de pago antes de confirmar.');
     confirming.current = true;
     try {
-      const body = pending || {session_id: session!.id, customer_id: customer, items: lines.map(l => ({product_id: l.product.id, quantity: quantityForApi(l.milli!), expected_price_cents: l.product.price_cents})), method, platform_id: method === 'electronic' ? pay : null, request_key: Crypto.randomUUID()};
-      // La referencia se guarda antes de enviar: si se cae la conexión, el reintento no duplica la venta.
-      await savePending(userId, body); setPending(body);
+      const key = Crypto.randomUUID(), soldAt = new Date().toISOString(), provisional = await nextProvisional();
+      const c = selectedCustomer!, platformName = platforms.find(p => p.id === pay)?.name || null;
+      const body = {session_id: session!.id, customer_id: customer, items: lines.map(l => ({product_id: l.product.id, quantity: quantityForApi(l.milli!), expected_price_cents: l.product.price_cents})), method, platform_id: method === 'electronic' ? pay : null, request_key: key,
+        sold_at: soldAt, offline_ref: provisional, ...(c.pending ? {new_customer: {id: c.id, name: c.name, city: c.city}} : {})};
+      // Vista local de la venta: permite imprimir el comprobante y verla en el historial aunque no haya señal.
+      const preview: Sale = {id: key, number: 0, session_id: session!.id, session_number: session!.number, seller_id: userId, customer_id: c.id, created_at: soldAt, total_cents: total,
+        snapshot: {business_name: settings.business_name, business_nit: settings.business_nit, business_address: settings.business_address, business_phone: settings.business_phone, business_city: settings.business_city, customer_name: c.name, customer_city: c.city, seller_name: user.name, offline_ref: provisional},
+        items: lines.map(l => ({id: l.product.id, name: l.product.name, unit: l.product.unit, price_cents: l.product.price_cents, quantity_milli: l.milli!, subtotal_cents: l.subtotal})),
+        payments: [{method, platform_name: method === 'cash' ? null : platformName, amount_cents: total}]};
+      // Primero se guarda en el celular; luego se intenta subir. Si no hay señal, queda en la cola y se sube sola.
+      await enqueue({key, provisional, created_at: soldAt, body, sale: preview});
+      const change = method === 'cash' && receivedCents !== null ? receivedCents - total : null;
       let sale: Sale;
       try { sale = await api<Sale>('/sales', 'POST', body); }
       catch (e) {
-        if (e instanceof ApiError && e.status > 0 && e.status < 500) { await savePending(userId, null); setPending(null); if (e.status === 409) void refresh().catch(() => undefined); }
-        throw e;
+        // Rechazo con señal (precio cambiado, stock, caja): no se registró; se quita de la cola y se informa.
+        if (e instanceof ApiError && e.status > 0 && e.status < 500) { await dequeue(key); void refresh().catch(() => undefined); throw e; }
+        setDone({sale: preview, change, offline: true}); reset(); return;
       }
-      await savePending(userId, null); setPending(null);
-      setDone({sale, change: method === 'cash' && receivedCents !== null ? receivedCents - sale.total_cents : null});
-      reset(); await refresh();
+      await dequeue(key);
+      setDone({sale, change, offline: false});
+      reset(); await refresh().catch(() => undefined);
     } finally { confirming.current = false; }
   }
 
@@ -106,8 +123,8 @@ export function SaleScreen({userId, active, session, products, customers, platfo
     return <Page testID="sale-done">
       <View style={{alignItems: 'center', gap: 8, paddingTop: 12}}>
         <View style={{width: 76, height: 76, borderRadius: 38, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center'}}><Feather name="check" size={40} color="white"/></View>
-        <Text style={styles.title}>¡Venta registrada!</Text>
-        <Text style={styles.muted}>Venta {receiptNumber(sale.number)} · {sale.snapshot.customer_name}</Text>
+        <Text style={styles.title}>{done.offline ? '¡Venta guardada!' : '¡Venta registrada!'}</Text>
+        <Text style={styles.muted}>Venta {saleTitle(sale)} · {sale.snapshot.customer_name}</Text>
       </View>
       <Card style={{alignItems: 'center', gap: 4}}>
         <Text style={styles.small}>Total cobrado</Text>
@@ -115,30 +132,25 @@ export function SaleScreen({userId, active, session, products, customers, platfo
         <Badge text={p?.method === 'cash' ? 'Efectivo' : p?.platform_name || 'Electrónico'} tone="gray"/>
         {change !== null && change > 0 && <View style={{marginTop: 8, alignItems: 'center'}}><Text style={styles.small}>Cambio para el cliente</Text><Text style={[styles.metric, {color: colors.orange}]}>{cop(change)}</Text></View>}
       </Card>
+      {done.offline && <Banner tone="yellow" title="Sin señal: guardada en el celular" text="Se subirá sola cuando haya internet y recibirá su número consecutivo oficial. Ya puedes imprimir el comprobante."/>}
       {sale.pdf_message && <Banner tone="orange" text={sale.pdf_message}/>}
       <View style={{gap: 10}}>
         <Button title="Nueva venta" icon="plus" size="lg" onPress={() => setDone(null)} testID="sale-new"/>
         <View style={[styles.row, {gap: 10}]}>
-          <Button title="Imprimir" icon="printer" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => run(() => documentAction(`/sales/${sale.id}`, paperWidth, 'print'))}/>
-          <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => run(() => documentAction(`/sales/${sale.id}`, paperWidth, 'share'))}/>
+          <Button title="Imprimir" icon="printer" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => run(() => printLocal(sale, paperWidth, 'print'))} testID="sale-print"/>
+          <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => run(() => printLocal(sale, paperWidth, 'share'))}/>
         </View>
         <Button title="Ver comprobante" icon="file-text" variant="outline" onPress={() => { setDone(null); onViewSale(sale); }} testID="sale-view-receipt"/>
       </View>
     </Page>;
   }
 
-  // ── Venta cuya confirmación quedó en el aire (sin conexión): solo se puede reintentar con la misma referencia.
-  if (pending) return <Page>
-    <Banner tone="orange" title="Hay una venta sin confirmar" text="Se perdió la conexión mientras se guardaba. No la registres otra vez: toca Reintentar y el sistema confirma o recupera la misma venta, sin duplicarla."/>
-    <Card><Text style={styles.small}>Referencia: {String(pending.request_key)}</Text><Button title="Reintentar confirmación" icon="refresh-cw" size="lg" loading={busy} onPress={() => run(confirm, 'Venta confirmada')}/></Card>
-  </Page>;
-
   if (!session) return <Page><Empty icon="lock" title="Tu caja está cerrada" text="Para registrar ventas, primero abre tu caja con el dinero base. Las ventas anteriores siguen en el historial." action="Abrir mi caja" onAction={onOpenCash}/></Page>;
 
   const footer = view === 'pay'
     ? <FooterBar>
         <View style={{flex: 1, minWidth: 0}}><Text style={styles.small}>Total a cobrar</Text><Text numberOfLines={1} style={[styles.metric, {color: colors.green, fontSize: fitSize(cop(total), 22, 9)}]}>{cop(total)}</Text></View>
-        <Button title="Confirmar" icon="check" size="lg" style={{flexShrink: 0, paddingHorizontal: 18}} loading={busy} disabled={!valid} onPress={() => run(confirm, 'Venta registrada')} testID="confirm-sale"/>
+        <Button title="Confirmar" icon="check" size="lg" style={{flexShrink: 0, paddingHorizontal: 18}} loading={busy} disabled={!valid} onPress={() => run(confirm)} testID="confirm-sale"/>
       </FooterBar>
     : <FooterBar>
         <Pressable accessibilityRole="button" accessibilityLabel="Ver productos de la venta" onPress={() => setView('cart')} style={{flex: 1, minWidth: 0}}>
@@ -193,7 +205,7 @@ export function SaleScreen({userId, active, session, products, customers, platfo
           </View>}
           {method === 'electronic' && <Text style={styles.small}>Verifica que el pago aparezca en la cuenta antes de confirmar.</Text>}
         </Card>
-        <Text style={[styles.small, {textAlign: 'center'}]}>Al confirmar, el sistema verifica precios, existencias y caja, y genera el comprobante.</Text>
+        <Text style={[styles.small, {textAlign: 'center'}]}>Con señal, el sistema verifica precios, existencias y caja al confirmar. Sin señal, la venta queda guardada en el celular y se sube sola.</Text>
       </> : <>
         {customerCard}
         <Segmented items={[{id: 'catalog', name: 'Productos'}, {id: 'cart', name: `En la venta${cart.length ? ` (${cart.length})` : ''}`}]} value={view} onChange={v => setView(v as SaleView)} testID="sale-tabs"/>
@@ -256,7 +268,16 @@ export function SaleScreen({userId, active, session, products, customers, platfo
     <Sheet visible={pickCustomer} onClose={() => setPickCustomer(false)} title={newCustomer ? 'Nuevo cliente' : 'Elegir cliente'} subtitle={newCustomer ? 'Se guarda y queda seleccionado en esta venta' : undefined}
       footer={newCustomer ? <>
         <Button title="Crear y seleccionar" icon="user-plus" size="lg" disabled={busy || !name.trim() || !city.trim()} loading={busy} testID="customer-create"
-          onPress={() => run(async () => { const c = await api<Customer>('/customers', 'POST', {name: name.trim(), city: city.trim()}); setCustomer(c.id); setNewCustomer(false); setPickCustomer(false); setName(''); setCity(''); await refresh(); }, 'Cliente guardado')}/>
+          onPress={() => run(async () => {
+            let c: Customer;
+            try { c = await api<Customer>('/customers', 'POST', {name: name.trim(), city: city.trim()}); await refresh(); }
+            catch (e) {
+              if (!(e instanceof ApiError && e.status === 0)) throw e;
+              // Sin señal: el cliente queda en el celular y se crea en el sistema junto con la venta.
+              c = {id: Crypto.randomUUID(), name: name.trim(), city: city.trim(), pending: true}; onLocalCustomer(c);
+            }
+            setCustomer(c.id); setNewCustomer(false); setPickCustomer(false); setName(''); setCity('');
+          }, 'Cliente guardado')}/>
         <Button title="Volver a la lista" variant="ghost" onPress={() => setNewCustomer(false)}/>
       </> : <Button title="Crear cliente nuevo" icon="user-plus" variant="secondary" onPress={() => { setNewCustomer(true); setName(customerSearch.trim()); }} testID="customer-new"/>}>
       {newCustomer ? <>

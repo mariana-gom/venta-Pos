@@ -24,45 +24,73 @@ export function saleDetail(db,user,saleId) {
  if(user.role!=='admin' && sale.seller_id!==user.id) fail(403,'No puedes consultar una venta ajena.');
  return {...sale,session_number:sessionNumber(db,sale.session_id),snapshot:JSON.parse(sale.snapshot),items:db.prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid').all(saleId),payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(saleId)};
 }
+// Una venta que llega más de 2 minutos después de hecha viene de una ruta sin señal: ya ocurrió y se le entregó
+// el producto al cliente. Reglas acordadas con el negocio: se respeta el precio con el que se vendió, se acepta aunque
+// falte stock (queda en 0) y se avisa al administrador. Las ventas inmediatas siguen siendo estrictas.
+export const LATE_SALE_MS=2*60*1000;
 export function recordSale(db,user,input) {
  return transaction(db,()=>{
   const requestHash=digest(JSON.stringify(input));
   const existing=db.prepare('SELECT id,request_hash FROM sales WHERE seller_id=? AND request_key=?').get(user.id,input.request_key);
   if(existing) {if(existing.request_hash!==requestHash) fail(409,'Esta referencia ya fue usada para otra venta.');return saleDetail(db,user,existing.id);}
-  const session=sessionFor(db,user,input.session_id);
+  const received=Date.now();let created=new Date(received).toISOString(),late=false;
+  if(input.sold_at){const t=Date.parse(input.sold_at);if(t<=received+10*60*1000){created=new Date(Math.min(t,received)).toISOString();late=received-t>LATE_SALE_MS;}}
+  const alerts=[];
+  let session=sessionFor(db,user,input.session_id);
   if(session.opened_by!==user.id) fail(403,'Solo el propietario puede vender en esta caja.');
-  if(session.state!=='open') fail(409,'La caja está cerrada. Abre una nueva.');
-  const customer=db.prepare('SELECT * FROM customers WHERE id=? AND active=1').get(input.customer_id);
+  if(session.state!=='open') {
+   if(!late) fail(409,'La caja está cerrada. Abre una nueva.');
+   // La caja se cerró mientras el celular estaba sin señal: la venta entra en la caja abierta actual del vendedor.
+   const open=db.prepare("SELECT id FROM cash_sessions WHERE opened_by=? AND state='open'").get(user.id);
+   if(!open) fail(409,'La caja de esta venta ya se cerró. Abre una caja nueva para subir las ventas de ruta pendientes.');
+   alerts.push({type:'session_moved',from_session:session.id});session=sessionFor(db,user,open.id);
+  }
+  let customer=db.prepare(`SELECT * FROM customers WHERE id=? ${late?'':'AND active=1'}`).get(input.customer_id);
+  // Cliente creado en ruta sin señal: llega con la venta. Si ya existe con el mismo nombre y ciudad, se reutiliza.
+  if(!customer&&input.new_customer&&input.new_customer.id===input.customer_id){
+   const c=input.new_customer;
+   customer=db.prepare('SELECT * FROM customers WHERE name=? COLLATE NOCASE AND city=? COLLATE NOCASE AND active=1').get(c.name,c.city);
+   if(!customer){db.prepare('INSERT INTO customers VALUES (?,?,?,?,?,?)').run(c.id,c.name,c.city,1,created,created);audit(db,user.id,'customer.create',c.id,{name:c.name,city:c.city,offline:true});customer=db.prepare('SELECT * FROM customers WHERE id=?').get(c.id);}
+  }
   if(!customer) fail(400,'Selecciona un cliente activo.');
   let platform=null;
   if(input.method==='electronic') {
-   platform=db.prepare('SELECT * FROM platforms WHERE id=? AND active=1').get(input.platform_id||'');
+   platform=db.prepare(`SELECT * FROM platforms WHERE id=? ${late?'':'AND active=1'}`).get(input.platform_id||'');
    if(!platform) fail(400,'Selecciona una plataforma electrónica activa.');
   } else if(input.platform_id) fail(400,'Un pago en efectivo no debe tener plataforma.');
   const seen=new Set();
   const items=input.items.map(item=>{
    if(seen.has(item.product_id)) fail(400,'Agrupa la cantidad del producto repetido en una sola línea.');seen.add(item.product_id);
-   const p=db.prepare('SELECT * FROM products WHERE id=? AND active=1').get(item.product_id);
+   const p=db.prepare(`SELECT * FROM products WHERE id=? ${late?'':'AND active=1'}`).get(item.product_id);
    if(!p) fail(400,'Uno de los productos no está disponible.');
-   if(item.expected_price_cents!==undefined && item.expected_price_cents!==p.price_cents) fail(409,`El precio de ${p.name} cambió. Actualiza los productos antes de confirmar.`);
+   let price=p.price_cents;
+   if(item.expected_price_cents!==undefined && item.expected_price_cents!==p.price_cents) {
+    if(!late) fail(409,`El precio de ${p.name} cambió. Actualiza los productos antes de confirmar.`);
+    price=item.expected_price_cents;alerts.push({type:'price',product:p.name,sold_cents:price,current_cents:p.price_cents});
+   }
    const qty=quantity(item.quantity,p.unit);
-   if(p.stock_milli!==null && p.stock_milli<qty) fail(409,`Existencias insuficientes: ${p.name}.`);
-   return {id:id(),product_id:p.id,name:p.name,unit:p.unit,quantity_milli:qty,price_cents:p.price_cents,subtotal_cents:subtotal(p.price_cents,qty),tracks_stock:p.stock_milli!==null};
+   if(p.stock_milli!==null && p.stock_milli<qty) {
+    if(!late) fail(409,`Existencias insuficientes: ${p.name}.`);
+    alerts.push({type:'stock',product:p.name,unit:p.unit,missing_milli:qty-p.stock_milli});
+   }
+   return {id:id(),product_id:p.id,name:p.name,unit:p.unit,quantity_milli:qty,price_cents:price,subtotal_cents:subtotal(price,qty),tracks_stock:p.stock_milli!==null};
   });
   const total=items.reduce((sum,i)=>sum+i.subtotal_cents,0);
   if(!Number.isSafeInteger(total)||total>100_000_000_000) fail(400,'El total supera el límite permitido.');
-  const saleId=id(); const created=now();
+  const saleId=id();
   const number=db.prepare('SELECT COALESCE(MAX(number),0)+1 AS n FROM sales').get().n;
   const settings=db.prepare('SELECT * FROM settings WHERE id=1').get();
   // Los datos del negocio quedan congelados en la venta: el comprobante histórico no cambia si se editan después.
-  const snapshot={business_name:settings.business_name,business_nit:settings.business_nit,business_address:settings.business_address,business_phone:settings.business_phone,business_city:settings.business_city,customer_name:customer.name,customer_city:customer.city,seller_name:user.name};
+  const snapshot={business_name:settings.business_name,business_nit:settings.business_nit,business_address:settings.business_address,business_phone:settings.business_phone,business_city:settings.business_city,customer_name:customer.name,customer_city:customer.city,seller_name:user.name,...(late&&input.offline_ref?{offline_ref:input.offline_ref}:{})};
   db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?,?,?,?)').run(saleId,number,session.id,user.id,customer.id,created,total,JSON.stringify(snapshot),input.request_key,requestHash);
   for(const item of items) {
    db.prepare('INSERT INTO sale_items VALUES (?,?,?,?,?,?,?,?)').run(item.id,saleId,item.product_id,item.name,item.unit,item.quantity_milli,item.price_cents,item.subtotal_cents);
-   if(item.tracks_stock) db.prepare('UPDATE products SET stock_milli=stock_milli-?,updated_at=? WHERE id=?').run(item.quantity_milli,created,item.product_id);
+   // MAX(0,…): una venta de ruta con stock insuficiente deja el producto en 0 (la diferencia queda en la alerta).
+   if(item.tracks_stock) db.prepare('UPDATE products SET stock_milli=MAX(0,stock_milli-?),updated_at=? WHERE id=?').run(item.quantity_milli,now(),item.product_id);
   }
   db.prepare('INSERT INTO payments VALUES (?,?,?,?,?,?)').run(id(),saleId,input.method,platform?.id||null,platform?.name||null,total);
-  audit(db,user.id,'sale.create',saleId,{session_id:session.id,total_cents:total});
+  audit(db,user.id,'sale.create',saleId,{session_id:session.id,total_cents:total,...(late?{offline:true,sold_at:created}:{})});
+  if(alerts.length) audit(db,user.id,'sale.offline_alert',saleId,{number,offline_ref:input.offline_ref||null,alerts});
   return saleDetail(db,user,saleId);
  });
 }

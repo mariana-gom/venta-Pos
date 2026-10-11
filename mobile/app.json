@@ -17,7 +17,8 @@
       "package": "com.ventapos.mobile"
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-sqlite"
     ],
     "web": {
       "bundler": "metro",

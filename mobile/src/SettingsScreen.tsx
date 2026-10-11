@@ -5,7 +5,7 @@ import {api, API_URL} from './api';
 import {Badge, Button, Card, Choice, Confirm, Divider, Field, Logo, Page, Segmented, colors, date, initials, styles} from './ui';
 import type {Settings, User, Platform} from './types';
 import type {Run} from '../App';
-type Props = {user: User; settings: Settings; platforms: Platform[]; run: Run; refresh: () => Promise<void>; busy: boolean; logout: () => void};
+type Props = {queued: number; user: User; settings: Settings; platforms: Platform[]; run: Run; refresh: () => Promise<void>; busy: boolean; logout: () => void};
 type Audit = {id: string; actor_name: string; action: string; created_at: string};
 // Nombres comprensibles para la bitácora de auditoría.
 const ACTIONS: Record<string, string> = {
@@ -17,7 +17,7 @@ const ACTIONS: Record<string, string> = {
   'auth.login': 'Inició sesión', 'auth.logout': 'Cerró sesión',
 };
 
-export function SettingsScreen({user, settings, platforms, run, refresh, busy, logout}: Props) {
+export function SettingsScreen({queued, user, settings, platforms, run, refresh, busy, logout}: Props) {
   const admin = user.role === 'admin';
   const [open, setOpen] = useState<string>(''), [confirmLogout, setConfirmLogout] = useState(false);
   const [business, setBusiness] = useState({business_name: settings.business_name, business_nit: settings.business_nit || '', business_address: settings.business_address || '', business_city: settings.business_city || '', business_phone: settings.business_phone || ''}), [width, setWidth] = useState(String(settings.paper_width));
@@ -88,7 +88,8 @@ export function SettingsScreen({user, settings, platforms, run, refresh, busy, l
       </Group>
     </>}
 
-    <Button title="Cerrar sesión" icon="log-out" variant="outline" danger onPress={() => setConfirmLogout(true)} testID="logout"/>
+    {queued > 0 && <Text style={[styles.small, {color: colors.orange, textAlign: 'center'}]}>Tienes {queued} {queued === 1 ? 'venta' : 'ventas'} sin subir. Cierra sesión solo cuando se hayan subido.</Text>}
+    <Button title="Cerrar sesión" icon="log-out" variant="outline" danger disabled={queued > 0} onPress={() => setConfirmLogout(true)} testID="logout"/>
     <Text style={[styles.small, {textAlign: 'center', fontSize: 11}]}>Servidor: {API_URL}</Text>
     <Confirm visible={confirmLogout} title="¿Cerrar sesión?" message="Las ventas quedan guardadas y tu caja no se cierra al salir. Para volver, ingresa con tu usuario y contraseña." confirmText="Cerrar sesión" busy={busy} onCancel={() => setConfirmLogout(false)} onConfirm={() => { setConfirmLogout(false); logout(); }}/>
   </Page>;
