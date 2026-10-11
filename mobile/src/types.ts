@@ -1,0 +1,11 @@
+export type User={id:string;name:string;username:string;role:'admin'|'seller';active:number};
+export type Product={id:string;name:string;price_cents:number;unit:'unit'|'kg';active:number;stock_milli:number|null};
+export type Customer={id:string;name:string;city:string};
+export type Platform={id:string;name:string;active:number};
+export type Settings={business_name:string;paper_width:58|80};
+export type CashSession={id:string;opened_by:string;opener_name:string;opened_at:string;closed_at:string|null;state:'open'|'closed';opening_cents:number;cash_cents:number;electronic_cents:number;total_cents:number;sale_count:number;expected_cash_cents?:number;closure_id?:string|null;platforms?:{platform_name:string;amount:number}[]};
+export type Sale={pdf_status?:string;pdf_message?:string;id:string;number:number;session_id:string;seller_id:string;customer_id:string;created_at:string;total_cents:number;method?:string;platform_name?:string;snapshot:{business_name:string;customer_name:string;customer_city:string;seller_name:string};items?:{id:string;name:string;unit:string;price_cents:number;quantity_milli:number;subtotal_cents:number}[];payments?:{method:string;platform_name:string|null;amount_cents:number}[]};
+export type ClosureSnapshot={business_name:string;session_id:string;opened_at:string;closed_at:string;opener_name:string;admin_name:string;opening_cents:number;cash_cents:number;electronic_cents:number;total_cents:number;sale_count:number;expected_cash_cents:number;declared_cash_cents:number;declared_electronic_cents:number;cash_difference_cents:number;electronic_difference_cents:number;total_difference_cents:number;notes:string;platforms:{platform_name:string;amount:number}[]};
+export type Closure={pdf_status?:string;pdf_message?:string;id:string;number:number;session_id:string;created_at:string;snapshot:ClosureSnapshot;annotations?:{id:string;note:string;author_name:string;created_at:string}[]};
+export type SalesPage={sales:Sale[];count:number;page:number;groups:Record<string,{key:string|null;count:number;total_cents:number}[]>};
+export type CartLine={product:Product;quantity:string};
