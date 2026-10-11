@@ -1,11 +1,16 @@
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {Pressable, Text, View, useWindowDimensions} from 'react-native';
 import {Feather} from '@expo/vector-icons';
-import {Button, Card, IconButton, Page, Section, Stat, capitalize, colors, cop, fitSize, longToday, styles, time, shortDate} from './ui';
+import {api} from './api';
+import {Banner, Button, Card, IconButton, Page, Section, Stat, capitalize, colors, cop, quantityLabel, fitSize, longToday, styles, time, shortDate} from './ui';
 import type {CashSession, Tab, User} from './types';
 import type {Run} from '../App';
-type Props = {user: User; sessions: CashSession[]; busy: boolean; run: Run; refresh: () => Promise<void>; go: (tab: Tab) => void; onHistory: () => void; onCatalog: (sub: 'products' | 'customers') => void};
-export function HomeScreen({user, sessions, busy, run, refresh, go, onHistory, onCatalog}: Props) {
+type Props = {user: User; sessions: CashSession[]; busy: boolean; run: Run; refresh: () => Promise<void>; go: (tab: Tab) => void; onHistory: () => void; onCatalog: (sub: 'products' | 'customers') => void; online: boolean; queued: number; queuedTotal: number; onSync: () => void};
+type Alert = {id: string; sale_id: string; created_at: string; seller_name: string; detail: {number: number; offline_ref: string | null; alerts: {type: 'price' | 'stock' | 'session_moved'; product?: string; sold_cents?: number; current_cents?: number; unit?: string; missing_milli?: number}[]}};
+export function HomeScreen({user, sessions, busy, run, refresh, go, onHistory, onCatalog, online, queued, queuedTotal, onSync}: Props) {
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  // Avisos de ventas de ruta subidas tarde: solo administrador y con señal.
+  useEffect(() => { if (user.role === 'admin' && online) void api<Alert[]>('/alerts').then(setAlerts).catch(() => undefined); }, [user.role, online, sessions]);
   const {width} = useWindowDimensions();
   const own = sessions.find(s => s.opened_by === user.id && s.state === 'open');
   const admin = user.role === 'admin';
@@ -27,6 +32,15 @@ export function HomeScreen({user, sessions, busy, run, refresh, go, onHistory, o
       <IconButton icon="refresh-cw" label="Actualizar resumen" onPress={() => run(refresh, 'Resumen actualizado')} disabled={busy} testID="refresh-home"/>
     </View>
 
+    {!online && <Banner tone="gray" title="Sin señal · modo ruta" text="Puedes seguir vendiendo. Las ventas se guardan en el celular y se suben solas cuando haya internet."/>}
+    {queued > 0 && <Banner tone="yellow" title={`${queued} ${queued === 1 ? 'venta' : 'ventas'} por subir · ${cop(queuedTotal)}`} text="Están guardadas en este celular. Se suben automáticamente; no cierres sesión hasta que terminen." action={online ? 'Subir ahora' : undefined} onAction={onSync}/>}
+    {alerts.length > 0 && <Card tone="orange" testID="route-alerts">
+      <Text style={[styles.h2, {color: colors.orange}]}>Avisos de ventas en ruta ({alerts.length})</Text>
+      {alerts.slice(0, 5).map(a => a.detail.alerts.map((x, i) => <Text key={a.id + i} style={[styles.small, {color: colors.text}]}>
+        Venta #{String(a.detail.number).padStart(4, '0')} · {a.seller_name}: {x.type === 'price' ? `${x.product} se vendió a ${cop(x.sold_cents!)} (precio actual ${cop(x.current_cents!)})` : x.type === 'stock' ? `faltó stock de ${x.product} (${quantityLabel(x.missing_milli!, x.unit!)}); quedó en 0` : 'la caja ya estaba cerrada; entró en la caja abierta actual'}
+      </Text>))}
+      <Text style={styles.small}>Avisos de los últimos 7 días.</Text>
+    </Card>}
     {own
       ? <Card tone="green" testID="cash-open-card">
           <View style={[styles.row, {justifyContent: 'flex-start'}]}>

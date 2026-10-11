@@ -83,6 +83,20 @@ try{
  await page.getByRole('button',{name:'Efectivo',exact:true}).click();await expect(id('history-total')).toContainText('4.000');await expect(id('sale-row-1')).toHaveCount(0);
  await page.reload();await expect(page.getByText('Hola, Vendedora')).toBeVisible();await expect(id('stat-total')).toContainText('1.522.000');await capture('inicio');
  await id('tab-catalog').click();await capture('catalogo');
+ // Modo ruta: sin señal se sigue vendiendo; las ventas quedan en el celular y se suben al reconectar.
+ await context.setOffline(true);
+ await id('tab-sale').click();await id('customer-picker').click();await page.getByRole('button',{name:'Ana, Bogotá'}).click();
+ await id('add-Pollo').click();await id('quantity-input').fill('1');await id('quantity-save').click();await id('checkout').click();await page.getByRole('radio',{name:'Efectivo'}).click();await id('confirm-sale').click();
+ await expect(id('sale-done')).toContainText('¡Venta guardada!');await expect(id('sale-done')).toContainText('R-');await expect(id('sync-status')).toContainText('1');await capture('ruta-venta-sin-senal');
+ // Cliente nuevo creado sin señal: viaja con la venta.
+ await id('sale-new').click();await id('customer-picker').click();await id('customer-new').click();await page.getByLabel('Nombre del cliente').fill('Tienda La Ruta');await page.getByLabel('Ciudad o municipio').fill('Madrid');await id('customer-create').click();
+ await expect(id('customer-picker')).toContainText('Tienda La Ruta');await id('add-Pollo').click();await id('quantity-input').fill('1');await id('quantity-save').click();await id('checkout').click();await page.getByRole('radio',{name:'Efectivo'}).click();await id('confirm-sale').click();
+ await expect(id('sync-status')).toContainText('2');
+ await id('tab-history').click();await expect(page.getByText('Por subir (2)')).toBeVisible();await capture('ruta-por-subir');
+ if((await call('/sales')).count!==2)throw new Error('Una venta sin señal llegó al servidor antes de tiempo.');
+ await context.setOffline(false);await id('sync-status').click();await expect(id('sync-status')).toHaveCount(0,{timeout:20000});
+ const afterSync=await call('/sales');if(afterSync.count!==4)throw new Error(`Se esperaban 4 ventas tras sincronizar, hay ${afterSync.count}`);
+ if(!(await call('/customers')).some(c=>c.name==='Tienda La Ruta'))throw new Error('El cliente creado sin señal no llegó al servidor.');
  // Cerrar sesión desde Perfil revoca el token.
  const previousToken=await page.evaluate(()=>sessionStorage.getItem('pos-token'));await id('profile-button').click();await capture('perfil-vendedor');await id('logout').click();await page.getByRole('button',{name:'Cerrar sesión'}).last().click();
  await expect(page.getByRole('button',{name:'Entrar'})).toBeVisible();if(await page.evaluate(()=>sessionStorage.getItem('pos-token'))!==null)throw new Error('La sesión local no se eliminó.');
@@ -91,10 +105,10 @@ try{
  await signIn('admin-test');await expect(page.getByText('Hola, Administradora')).toBeVisible();
  await id('profile-button').click();await page.getByRole('button',{name:'Datos del negocio'}).click();await page.getByLabel('NIT o identificación (opcional)').fill('900.123.456-7');await page.getByLabel('Ciudad (opcional)').fill('El Rosal');await id('settings-save').click();await expect(page.getByText('NIT 900.123.456-7')).toBeVisible();await capture('perfil-admin');
  await id('tab-cash').click();await capture('caja-admin');await page.getByRole('button',{name:'Cerrar caja'}).click();
- await id('close-cash').fill('54.000');await page.getByRole('button',{name:/Coincide con lo registrado/}).click();await expect(page.getByText('Cuadra exacto').first()).toBeVisible();await capture('caja-cierre');
+ await id('close-cash').fill('78.000');await page.getByRole('button',{name:/Coincide con lo registrado/}).click();await expect(page.getByText('Cuadra exacto').first()).toBeVisible();await capture('caja-cierre');
  await id('review-close').click();await page.getByRole('button',{name:'Confirmar cierre definitivo'}).click();await expect(id('closure-detail')).toBeVisible();await expect(page.getByText('Cierre #0001')).toBeVisible();await capture('cierre');
  await page.getByRole('button',{name:'Ver ventas incluidas'}).click();await expect(id('sale-row-1')).toBeVisible();
  await id('tab-catalog').click();await id('catalog-Gaseosa').click();await expect(id('catalog-stock')).toHaveValue('6');await capture('catalogo-editar');
  if(errors.length)throw new Error(errors.join('\n'));
- console.log(`E2E móvil web: login, apertura, venta kg/unidades/decimales, carrito, cliente en flujo, doble clic sin duplicar, stock, comprobante y PDF, cambio en efectivo, filtros, recarga, logout, datos fiscales y cierre verificados. Capturas en ${WIDTHS.join(', ')} px.`);
+ console.log(`E2E móvil web: login, apertura, venta kg/unidades/decimales, carrito, cliente en flujo, doble clic sin duplicar, stock, comprobante y PDF, cambio en efectivo, filtros, recarga, logout, datos fiscales y cierre, y modo ruta sin señal (venta, cliente nuevo, sincronización) verificados. Capturas en ${WIDTHS.join(', ')} px.`);
 }catch(error){if(page)await page.screenshot({path:join(shots,'fallo.png'),fullPage:true}).catch(()=>{});throw error;}finally{if(browser)await browser.close();await new Promise(r=>server.close(r));db.close();rmSync(directory,{recursive:true,force:true});}

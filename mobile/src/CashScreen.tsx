@@ -5,11 +5,11 @@ import {api} from './api';
 import {Badge, Banner, Button, Card, Choice, Confirm, Divider, Empty, Field, Header, InfoRow, Page, Section, colors, cop, diff, moneyInput, moneyToCents, normalizeMoney, shortDate, signed, styles, time, useBack} from './ui';
 import type {CashSession, Closure, User} from './types';
 import type {Run} from '../App';
-type Props = {sessions: CashSession[]; user: User; run: Run; refresh: () => Promise<void>; busy: boolean; onClosure: (closure: Closure) => void; onHistory: (session: string) => void; onSell: () => void};
+type Props = {queued: number; sessions: CashSession[]; user: User; run: Run; refresh: () => Promise<void>; busy: boolean; onClosure: (closure: Closure) => void; onHistory: (session: string) => void; onSell: () => void};
 const OPENING_PRESETS = [0, 5000000, 10000000, 20000000];
 const label = (s: CashSession) => `Caja${s.number ? ` #${s.number}` : ''}`;
 
-export function CashScreen({sessions, user, run, refresh, busy, onClosure, onHistory, onSell}: Props) {
+export function CashScreen({queued, sessions, user, run, refresh, busy, onClosure, onHistory, onSell}: Props) {
   const [opening, setOpening] = useState(''), [selected, setSelected] = useState<CashSession | null>(null), [cash, setCash] = useState(''), [electronic, setElectronic] = useState(''), [notes, setNotes] = useState(''), [review, setReview] = useState(false), [showClosed, setShowClosed] = useState(8), [now, setNow] = useState(new Date());
   const admin = user.role === 'admin';
   const own = sessions.find(s => s.opened_by === user.id && s.state === 'open');
@@ -68,7 +68,7 @@ export function CashScreen({sessions, user, run, refresh, busy, onClosure, onHis
         <Divider/>
         <InfoRow label="Diferencia total" value={signed(cashDiff + elecDiff)} strong/>
       </Card>
-      <Text style={styles.small}>El servidor vuelve a sumar las ventas al cerrar. Si entró una venta nueva mientras contabas, te pedirá revisar otra vez.</Text>
+      <Text style={styles.small}>El servidor vuelve a sumar las ventas al cerrar. Si entró una venta nueva mientras contabas, te pedirá revisar otra vez. Si el vendedor estuvo en ruta, verifica que su celular no tenga ventas por subir.</Text>
     </Confirm>
   </Page>;
 
@@ -87,6 +87,7 @@ export function CashScreen({sessions, user, run, refresh, busy, onClosure, onHis
           <Button title="Abrir caja" icon="unlock" size="lg" disabled={busy || openingCents === null} loading={busy} testID="open-cash"
             onPress={() => run(async () => { await api('/cash-sessions', 'POST', {opening: opening.trim() ? normalizeMoney(opening) : '0'}); setOpening(''); await refresh(); }, 'Caja abierta. ¡Buenas ventas!')}/>
         </Card>}
+    {queued > 0 && <Banner tone="yellow" title={`${queued} ${queued === 1 ? 'venta' : 'ventas'} de ruta sin subir`} text="Conéctate a internet antes de que cierren tu caja. Si la cierran antes, las ventas entran en tu próxima caja abierta."/>}
     {!admin && own && <Banner tone="gray" text="El cierre de caja lo realiza un administrador: cuenta el efectivo y verifica los pagos electrónicos."/>}
 
     {admin && <Section title={`Otras cajas abiertas (${others.length})`}>
