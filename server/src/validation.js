@@ -9,7 +9,7 @@ export const schemas = {
  product:z.object({name:text(),price:decimal,unit:z.enum(['unit','kg']),active:z.boolean().default(true),stock:decimal.nullable().default(null)}),
  customer:z.object({name:text(),city:text(100)}),
  platform:z.object({name:text(80),active:z.boolean().default(true)}),
- settings:z.object({business_name:text(),paper_width:z.union([z.literal(58),z.literal(80)])}),
+ settings:z.object({business_name:text(),paper_width:z.union([z.literal(58),z.literal(80)]),business_nit:z.string().trim().max(40).optional(),business_address:z.string().trim().max(160).optional(),business_phone:z.string().trim().max(40).optional(),business_city:z.string().trim().max(100).optional()}),
  opening:z.object({opening:decimal.default('0')}),
  sale:z.object({session_id:z.string().uuid(),customer_id:z.string().uuid(),items:z.array(z.object({product_id:z.string().uuid(),quantity:decimal,expected_price_cents:z.number().int().positive().optional()})).min(1).max(100),method:z.enum(['cash','electronic']),platform_id:z.string().max(80).nullable().optional(),request_key:z.string().uuid()}),
  closing:z.object({reviewed_sale_count:z.number().int().nonnegative().optional(),declared_cash:decimal,declared_electronic:decimal,notes:z.string().trim().max(2000).default('')}),

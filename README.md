@@ -1,4 +1,4 @@
-# Venta POS móvil
+# DANNY'S POS — Distribuidora & Salsamentaria Danny's
 
 Aplicación Expo/React Native dirigida a Android con API Node 24 y SQLite persistente. Implementa acceso por roles, productos por unidad/kg, clientes, stock opcional, pagos, caja por vendedor, cierres administrativos auditables, historial y PDF térmicos de 80 mm por defecto (58 mm también disponible).
 
@@ -41,9 +41,18 @@ API: puerto **4317**. Expo: puerto **8097**. No se detienen otros procesos. Si u
 
 Esta versión requiere conexión a la API para guardar y consultar. No se implementa venta offline. El celular conserva la referencia de una venta cuya confirmación quedó pendiente y permite reintentar sin duplicar. Los datos definitivos están en el servidor.
 
+## Diseño y navegación
+
+Interfaz mobile first con la identidad de DANNY'S: logo oficial (`mobile/assets/brand/dannys-logo.png`, sin redibujar ni deformar), verde corporativo, superficies blancas y acentos amarillo/naranja con moderación. Componentes compartidos en `mobile/src/ui.tsx` (botones, campos, tarjetas, hojas inferiores, confirmaciones, avisos, estados vacíos y de carga) y formato/lectura de valores colombianos en `mobile/src/format.ts`.
+
+Navegación inferior de cinco pestañas: Inicio, Caja, **Vender** (al centro), Catálogo e Historial. Perfil, configuración y cierre de sesión se abren desde el avatar del encabezado. El botón atrás de Android cierra primero hojas y subpantallas y luego vuelve a Inicio.
+
+- **Vender:** cliente en una fila tocable (buscar o crear sin salir de la venta), búsqueda sin tildes, unidades con un toque y kilos con hoja de peso (atajos 0,25 · 0,5 · 1 · 1,5 · 2 · 3 kg, coma o punto decimal). Carrito con − / + y edición directa. El total y el botón Cobrar quedan fijos sobre la navegación. Pago en un toque (Efectivo o cada plataforma activa) con cálculo de cambio. La confirmación tiene bloqueo contra doble toque y, al terminar, ofrece imprimir, compartir, ver comprobante o iniciar otra venta.
+- **Historial:** filtros Hoy, Ayer, 7 días, Todo y Rango; método de pago; cliente y vendedor. Detalle de venta y vista previa del comprobante antes de imprimir o compartir.
+
 ## Flujo de operación
 
-1. Administrador configura negocio, plataformas y usuarios en Perfil, productos/clientes en Catálogo.
+1. Administrador configura negocio (nombre, NIT, dirección, ciudad, teléfono y papel), plataformas y usuarios en Perfil, y productos/clientes en Catálogo.
 2. Vendedor inicia sesión y abre su caja con saldo inicial.
 3. En Vender selecciona o crea cliente, añade productos, ingresa unidades enteras o kg con hasta tres decimales, escoge pago y confirma.
 4. La API calcula el total, conserva precios históricos, actualiza stock si está activado y registra venta/detalles/pago en una transacción.
