@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "Venta POS",
+    "slug": "venta-pos",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "ventapos",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ventapos.mobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Conectar con el servidor de tu negocio en la red local."
+      }
+    },
+    "android": {
+      "package": "com.ventapos.mobile"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ],
+    "web": {
+      "bundler": "metro"
+    },
+    "platforms": [
+      "android",
+      "web"
+    ]
+  }
+}

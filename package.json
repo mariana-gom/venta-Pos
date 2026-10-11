@@ -1,0 +1,31 @@
+{
+  "name": "venta-pos",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "server",
+    "mobile"
+  ],
+  "scripts": {
+    "server": "npm run dev -w server",
+    "mobile": "npm run start -w mobile",
+    "test": "npm test -w server",
+    "check": "npm run check -w mobile",
+    "setup-admin": "npm run setup-admin -w server",
+    "backup": "npm run backup -w server",
+    "test:e2e": "node scripts/e2e.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "overrides": {
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
+}
