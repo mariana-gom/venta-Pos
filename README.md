@@ -39,7 +39,7 @@ En `mobile/.env`, configura `EXPO_PUBLIC_API_URL` con la IP del servidor visible
 
 API: puerto **4317**. Expo: puerto **8097**. No se detienen otros procesos. Si un puerto está ocupado, cambia `PORT` y la URL del cliente, o pasa otro puerto a Expo y actualiza `CORS_ORIGINS`. Los scripts no despliegan ni modifican proyectos externos.
 
-Esta versión requiere conexión a la API para guardar y consultar. No se implementa venta offline. El celular conserva la referencia de una venta cuya confirmación quedó pendiente y permite reintentar sin duplicar. Los datos definitivos están en el servidor.
+Con señal, la app trabaja directamente con la API. Sin señal (rutas), vende en modo ruta y sincroniza después: ver docs/MODO-RUTA.md. El celular conserva la referencia de una venta cuya confirmación quedó pendiente y permite reintentar sin duplicar. Los datos definitivos están en el servidor.
 
 ## Diseño y navegación
 
@@ -94,6 +94,7 @@ El catálogo admite stock opcional: vacío desactiva control; un valor activa ex
 - [Impresión y compatibilidad](docs/IMPRESION.md)
 - [Validación y estado por etapa](docs/VALIDACION.md)
 - [Despliegue en Railway + Vercel](docs/DESPLIEGUE.md)
+- [Modo ruta: ventas sin señal y sincronización](docs/MODO-RUTA.md)
 
 Pendiente de aceptación: instalación y pruebas en celulares Android reales, prueba física de la impresora genérica MTP-3 de 80 mm e integración Bluetooth ESC/POS según la variante real. PDF y impresión directa Bluetooth son funciones distintas.
 

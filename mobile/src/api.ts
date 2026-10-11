@@ -4,14 +4,20 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
 import type {User} from './types';
+import {loadCache} from './offline';
 let token='';
+// Estado de conexión observado en cada llamada: el modo ruta lo usa para guardar ventas y subirlas después.
+const listeners=new Set<(online:boolean)=>void>();let online=true;
+function setOnline(value:boolean){if(value!==online){online=value;listeners.forEach(l=>l(value));}}
+export function onConnectivity(listener:(online:boolean)=>void){listeners.add(listener);return()=>{listeners.delete(listener);};}
+export const isOnline=()=>online;
 export const API_URL=(process.env.EXPO_PUBLIC_API_URL||'http://localhost:4317').replace(/\/$/,'');
 /** Error con mensaje para el usuario y detalle técnico para diagnóstico (código, ruta). */
 export class ApiError extends Error { constructor(message:string,public status:number,public detail=''){super(message);} }
 export async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{
  let response:Response;
- try{response=await fetch(API_URL+'/api'+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});}
- catch(e){throw new ApiError('No hay conexión con el servidor. Revisa el internet o el Wi-Fi e inténtalo nuevamente.',0,`${method} ${path} · ${e instanceof Error?e.message:String(e)} · ${API_URL}`);}
+ try{response=await fetch(API_URL+'/api'+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});setOnline(true);}
+ catch(e){setOnline(false);throw new ApiError('No hay conexión con el servidor. Revisa el internet o el Wi-Fi e inténtalo nuevamente.',0,`${method} ${path} · ${e instanceof Error?e.message:String(e)} · ${API_URL}`);}
  // Un proxy o servidor caído puede responder HTML: nunca mostrar un error de lectura JSON al usuario.
  let data:any=null;try{data=await response.json();}catch{}
  if(!response.ok){
@@ -25,7 +31,12 @@ export async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{
 export async function restoreSession():Promise<User|null>{
  token=Platform.OS==='web'?(sessionStorage.getItem('pos-token')||''):(await SecureStore.getItemAsync('pos-token')||'');
  if(!token)return null;
- try{return await api<User>('/me');}catch(e){if(e instanceof ApiError&&e.status===401){await forgetSession();return null;}throw e;}
+ try{return await api<User>('/me');}catch(e){
+  if(e instanceof ApiError&&e.status===401){await forgetSession();return null;}
+  // Sin señal: se continúa con el último usuario guardado en este celular (la sesión se valida al reconectar).
+  if(e instanceof ApiError&&e.status===0){const cache=await loadCache();if(cache)return cache.user;}
+  throw e;
+ }
 }
 export async function signIn(username:string,password:string){
  const result=await api<{token:string;user:User}>('/auth/login','POST',{username,password});token=result.token;

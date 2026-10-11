@@ -1,17 +1,18 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {Pressable, Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
-import {api, documentAction} from './api';
+import {api, ApiError, documentAction} from './api';
 import {Receipt} from './Receipt';
+import {printLocal, saleTitle, type QueuedSale} from './offline';
 import {Badge, Banner, Button, Card, Choice, Divider, Empty, Field, FooterBar, Header, IconButton, InfoRow, Loading, Page, SearchBar, Section, Segmented, Sheet, bogotaDay, colors, cop, date, dayLabel, diff, isIsoDate, normalizeSearch, quantityLabel, receiptNumber, shortDate, signed, styles, time, useBack} from './ui';
 import type {Sale, Closure, SalesPage, Settings, User, Customer, CashSession} from './types';
 import type {Run} from '../App';
-type Props = {user: User; settings: Settings; run: Run; busy: boolean; initialSale: Sale | null; initialClosure: Closure | null; sessionFilter: string; clearInitial: () => void; customers: Customer[]; sessions: CashSession[]};
+type Props = {user: User; settings: Settings; run: Run; busy: boolean; initialSale: Sale | null; initialClosure: Closure | null; sessionFilter: string; clearInitial: () => void; customers: Customer[]; sessions: CashSession[]; queue: QueuedSale[]};
 type Period = 'today' | 'yesterday' | 'week' | 'all' | 'range';
 const PERIODS: {id: Period; name: string}[] = [{id: 'today', name: 'Hoy'}, {id: 'yesterday', name: 'Ayer'}, {id: 'week', name: '7 días'}, {id: 'all', name: 'Todo'}, {id: 'range', name: 'Rango'}];
 const methodName = (s: {method?: string; platform_name?: string | null}) => s.method === 'cash' ? 'Efectivo' : s.platform_name || 'Electrónico';
 
-export function HistoryScreen({user, settings, run, busy, initialSale, initialClosure, sessionFilter, clearInitial, customers, sessions}: Props) {
+export function HistoryScreen({user, settings, run, busy, initialSale, initialClosure, sessionFilter, clearInitial, customers, sessions, queue}: Props) {
   const admin = user.role === 'admin';
   const [tab, setTab] = useState(initialClosure ? 'closures' : 'sales'), [activeSession, setActiveSession] = useState(sessionFilter);
   const [sale, setSale] = useState<Sale | null>(initialSale), [receipt, setReceipt] = useState(!!initialSale), [closure, setClosure] = useState<Closure | null>(initialClosure);
@@ -41,7 +42,10 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
     const result = await api<SalesPage>('/sales?' + params);
     setPage(result); setList(current => next === 1 ? result.sales : [...current, ...result.sales]);
   }
-  useEffect(() => { if (tab === 'sales' && !rangeError) run(() => load(1)); }, [tab, range.from, range.to, method, customer, seller, activeSession]);
+  const [noSignal, setNoSignal] = useState(false);
+  // Sin señal no es un error: se muestran las ventas guardadas en el celular y un aviso.
+  const loadSafe = (next = 1) => load(next).then(() => setNoSignal(false)).catch(e => { if (e instanceof ApiError && e.status === 0) setNoSignal(true); else throw e; });
+  useEffect(() => { if (tab === 'sales' && !rangeError) run(() => loadSafe(1)); }, [tab, range.from, range.to, method, customer, seller, activeSession]);
   useEffect(() => { if (tab === 'closures' && admin) run(async () => setClosures(await api<Closure[]>('/closures'))); }, [tab]);
 
   function back() { if (receipt && sale) { setReceipt(false); return; } setSale(null); setClosure(null); setReceipt(false); clearInitial(); }
@@ -49,14 +53,16 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
   const customerName = (id: string) => customers.find(c => c.id === id)?.name;
   const sessionNumber = sessions.find(s => s.id === activeSession)?.number;
   const pdf = (path: string, action: 'print' | 'share' | 'open') => run(() => documentAction(path, width, action));
+  // Una venta aún en el celular (sin número oficial) se imprime localmente; las registradas usan el PDF guardado.
+  const printSale = (s: Sale, action: 'print' | 'share') => s.number ? pdf(`/sales/${s.id}`, action) : run(() => printLocal(s, width, action));
   const BackLink = ({text}: {text: string}) => <Pressable accessibilityRole="button" onPress={back} hitSlop={8} style={[styles.row, {justifyContent: 'flex-start', gap: 6}]}><Feather name="arrow-left" size={18} color={colors.green}/><Text style={styles.link}>{text}</Text></Pressable>;
   const WidthPicker = () => <View style={{gap: 6}}><Text style={styles.label}>Tamaño del papel</Text><Segmented items={[{id: '58', name: '58 mm'}, {id: '80', name: '80 mm'}]} value={String(width)} onChange={v => setWidth(Number(v) as 58 | 80)}/></View>;
 
   // ── Vista previa del comprobante: datos históricos guardados, nunca los precios actuales.
   if (sale && receipt) return <Page testID="receipt-screen" footer={<FooterBar>
-      <Button title="Imprimir" icon="printer" style={{flex: 1.2}} disabled={busy} onPress={() => pdf(`/sales/${sale.id}`, 'print')} testID="receipt-print"/>
-      <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => pdf(`/sales/${sale.id}`, 'share')}/>
-      <Button title="PDF" icon="download" variant="outline" disabled={busy} onPress={() => pdf(`/sales/${sale.id}`, 'open')} testID="receipt-pdf"/>
+      <Button title="Imprimir" icon="printer" style={{flex: 1.2}} disabled={busy} onPress={() => printSale(sale, 'print')} testID="receipt-print"/>
+      <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => printSale(sale, 'share')}/>
+      {!!sale.number && <Button title="PDF" icon="download" variant="outline" disabled={busy} onPress={() => pdf(`/sales/${sale.id}`, 'open')} testID="receipt-pdf"/>}
     </FooterBar>}>
     <BackLink text="Volver al detalle de la venta"/>
     {sale.pdf_message && <Banner tone="orange" text={sale.pdf_message}/>}
@@ -68,7 +74,9 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
   // ── Detalle de venta
   if (sale) return <Page testID="sale-detail">
     <BackLink text="Historial"/>
-    <Header eyebrow="VENTA REGISTRADA" title={`Venta ${receiptNumber(sale.number)}`} subtitle={date(sale.created_at)} right={<Badge text="Guardada" icon="check"/>}/>
+    <Header eyebrow={sale.number ? 'VENTA REGISTRADA' : 'GUARDADA EN EL CELULAR'} title={`Venta ${saleTitle(sale)}`} subtitle={date(sale.created_at)} right={sale.number ? <Badge text="Guardada" icon="check"/> : <Badge text="Por subir" icon="upload-cloud" tone="yellow"/>}/>
+    {!sale.number && <Banner tone="yellow" text="Esta venta se hizo sin señal. Se subirá sola y recibirá su número consecutivo oficial."/>}
+    {!!sale.number && !!sale.snapshot.offline_ref && <Text style={styles.small}>Hecha en ruta sin señal · comprobante provisional {sale.snapshot.offline_ref}</Text>}
     <Card>
       <InfoRow label="Cliente" value={sale.snapshot.customer_name} strong/>
       <InfoRow label="Ciudad" value={sale.snapshot.customer_city}/>
@@ -88,8 +96,8 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
     </Card>
     <Button title="Ver comprobante" icon="file-text" size="lg" onPress={() => setReceipt(true)} testID="view-receipt"/>
     <View style={[styles.row, {gap: 10}]}>
-      <Button title="Reimprimir" icon="printer" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => pdf(`/sales/${sale.id}`, 'print')}/>
-      <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => pdf(`/sales/${sale.id}`, 'share')}/>
+      <Button title="Reimprimir" icon="printer" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => printSale(sale, 'print')}/>
+      <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => printSale(sale, 'share')}/>
     </View>
     <Text style={[styles.small, {textAlign: 'center'}]}>Las ventas confirmadas son definitivas. El sistema no permite anularlas ni editarlas.</Text>
   </Page>;
@@ -159,6 +167,20 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
     <Header eyebrow="HISTORIAL" title={tab === 'sales' ? 'Ventas' : 'Cierres de caja'}/>
     {admin && <Segmented items={[{id: 'sales', name: 'Ventas'}, {id: 'closures', name: 'Cierres'}]} value={tab} onChange={setTab} testID="history-tabs"/>}
     {tab === 'sales' ? <>
+      {noSignal && <Banner tone="gray" text="Sin señal: el historial del sistema se verá al recuperar internet. Abajo están las ventas guardadas en este celular."/>}
+      {queue.length > 0 && <Section title={`Por subir (${queue.length})`}>
+        <View style={{backgroundColor: colors.yellowSoft, borderRadius: 16, overflow: 'hidden'}}>
+          {queue.map((q, i) => <Pressable key={q.key} testID={`queued-${q.provisional}`} accessibilityRole="button" accessibilityLabel={`Venta ${q.provisional} por subir`} onPress={() => { setSale(q.sale); setReceipt(false); }}
+            style={[{flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14, minHeight: 60}, i > 0 && {borderTopWidth: 1, borderTopColor: '#F1E2B3'}]}>
+            <View style={{flex: 1, gap: 2}}>
+              <Text style={{fontSize: 15, fontWeight: '800', color: colors.ink}}>Venta {q.provisional}</Text>
+              <Text numberOfLines={1} style={styles.small}>{time(q.created_at)} · {q.sale.snapshot.customer_name}</Text>
+              {!!q.error && <Text style={[styles.small, {color: colors.red}]}>{q.error}</Text>}
+            </View>
+            <View style={{alignItems: 'flex-end', gap: 4}}><Text style={[styles.money, {fontSize: 15}]}>{cop(q.sale.total_cents)}</Text><Badge text="Por subir" icon="upload-cloud" tone="yellow"/></View>
+          </Pressable>)}
+        </View>
+      </Section>}
       <Choice items={PERIODS} value={period} onChange={v => setPeriod(v as Period)}/>
       {period === 'range' && <View style={[styles.row, {alignItems: 'flex-start', gap: 10}]}>
         <View style={{flex: 1}}><Field label="Desde" kind="date" value={from} onChange={setFrom} placeholder={bogotaDay(-30)}/></View>

@@ -1,6 +1,7 @@
 import React from 'react';
 import {Image, StyleSheet, Text, View} from 'react-native';
 import {cop, quantityLabel, receiptNumber, shortDate, time} from './format';
+import {saleTitle} from './offline';
 import type {Sale} from './types';
 
 // Misma versión monocromática que imprime la API (server/assets/dannys-logo-print.png): lo que se ve es lo que sale en papel.
@@ -20,7 +21,7 @@ export function Receipt({sale, width}: {sale: Sale; width: 58 | 80}) {
     <Text style={{fontSize: big ? size + 6 : small ? size - 2 : size, fontWeight: bold ? '700' : '400', textAlign: center ? 'center' : 'left', color: '#111', lineHeight: (big ? size + 6 : small ? size - 2 : size) * 1.35}}>{children}</Text>;
   const Pair = ({left, right, bold, big}: {left: string; right: string; bold?: boolean; big?: boolean}) =>
     <View style={r.pair}><Text style={{fontSize: big ? size + 4 : size, fontWeight: bold ? '800' : '400', color: '#111'}}>{left}</Text><Text style={{flexShrink: 1, textAlign: 'right', fontSize: big ? size + 4 : size, fontWeight: '700', color: '#111', fontVariant: ['tabular-nums']}}>{right}</Text></View>;
-  return <View testID="receipt-preview" accessibilityLabel={`Comprobante venta ${receiptNumber(sale.number)}`} style={[r.paper, {width: paper}]}>
+  return <View testID="receipt-preview" accessibilityLabel={`Comprobante venta ${saleTitle(sale)}`} style={[r.paper, {width: paper}]}>
     <Image source={PRINT_LOGO} resizeMode="contain" accessibilityLabel="Logo Danny's" style={{width: paper * 0.48, height: paper * 0.48 * 400 / 469, alignSelf: 'center'}}/>
     <T bold center>{s.business_name}</T>
     {!!s.business_nit && <T center small>NIT {s.business_nit}</T>}
@@ -28,7 +29,8 @@ export function Receipt({sale, width}: {sale: Sale; width: 58 | 80}) {
     {!!s.business_phone && <T center small>Tel. {s.business_phone}</T>}
     <View style={r.solid}/>
     <T center small bold>COMPROBANTE DE VENTA</T>
-    <T center big bold>Venta {receiptNumber(sale.number)}</T>
+    <T center big bold>Venta {saleTitle(sale)}</T>
+    {!sale.number ? <T center small>Número provisional · venta hecha sin señal</T> : s.offline_ref ? <T center small>Ref. ruta {s.offline_ref}</T> : null}
     <View style={r.solid}/>
     <Pair left="Fecha" right={shortDate(sale.created_at)}/>
     <Pair left="Hora" right={time(sale.created_at)}/>

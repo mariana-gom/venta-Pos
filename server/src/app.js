@@ -121,6 +121,8 @@ export function createApp(db) {
   const width=paperWidth(db,req.query.width),closure=closureDetail(db,req.params.id);
   res.type('pdf').set('Content-Disposition',`inline; filename="cierre-${closure.number}-${width}mm.pdf"`).send(await storedPdf(db,'closure',closure,width));
  });
+ // Avisos de ventas de ruta subidas tarde (precio distinto, stock insuficiente o caja ya cerrada).
+ app.get('/api/alerts',admin,(_,res)=>res.json(db.prepare("SELECT a.id,a.entity_id AS sale_id,a.detail,a.created_at,u.name AS seller_name FROM audit a LEFT JOIN users u ON u.id=a.actor_id WHERE a.action='sale.offline_alert' AND a.created_at>=? ORDER BY a.created_at DESC LIMIT 50").all(new Date(Date.now()-7*864e5).toISOString()).map(a=>({...a,detail:JSON.parse(a.detail)}))));
  app.get('/api/audit',admin,(_,res)=>res.json(db.prepare('SELECT a.*,u.name AS actor_name FROM audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 200').all()));
  app.use((req,res)=>res.status(404).json({error:'Ruta no encontrada.'}));
  app.use((error,req,res,next)=>{
