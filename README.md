@@ -93,6 +93,7 @@ El catálogo admite stock opcional: vacío desactiva control; un valor activa ex
 - [Modelo y etapas](docs/ARQUITECTURA.md)
 - [Impresión y compatibilidad](docs/IMPRESION.md)
 - [Validación y estado por etapa](docs/VALIDACION.md)
+- [Despliegue en Railway + Vercel](docs/DESPLIEGUE.md)
 
 Pendiente de aceptación: instalación y pruebas en celulares Android reales, prueba física de la impresora genérica MTP-3 de 80 mm e integración Bluetooth ESC/POS según la variante real. PDF y impresión directa Bluetooth son funciones distintas.
 
