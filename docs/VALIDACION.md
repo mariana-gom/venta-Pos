@@ -61,3 +61,19 @@ Plataforma principal: Android. Papel: 80 mm. El esquema inicial y el cliente usa
 Se mejoró el asistente para validar cada campo y volver a solicitar datos inválidos sin imprimir contraseñas ni una traza técnica. Se probó en terminal: usuario corto rechazado, corrección, contraseña corta rechazada y creación correcta en una base temporal.
 
 Se añadió `npm run dev` para iniciar API y web, con verificación TCP de puertos y cierre únicamente de los procesos de la propia ejecución. Se verificaron arranque de ambos componentes y rechazo de un puerto ocupado sin detener su proceso. Las cinco pruebas del backend y TypeScript continúan aprobados. La base del usuario no recibió credenciales ni registros de prueba.
+
+## Rediseño DANNY'S (11 de octubre de 2026, rama `feat-rediseño`)
+
+Interfaz rehecha en todas las pantallas (inicio de sesión, Inicio, Vender, Caja, Catálogo, Historial, detalle de venta, vista previa del comprobante, cierre, Perfil y hojas de formulario) sin cambiar reglas de negocio, pagos ni cálculos de caja. Cambios de servidor acotados: columnas opcionales `business_nit`, `business_address`, `business_phone` y `business_city` en `settings` (migración automática con `ALTER TABLE ADD COLUMN`; el nombre genérico “Mi negocio” pasa a “DISTRIBUIDORA & SALSAMENTARIA DANNY'S” y un nombre personalizado se respeta), copia de esos datos en la instantánea de cada venta nueva, número corto de caja calculado por orden de apertura y nuevo diseño PDF.
+
+Errores corregidos: la validación del carrito usaba aritmética de punto flotante (`1,1 kg` daba 1100,0000000000002 milésimas y bloqueaba la venta); un doble toque rápido en Confirmar podía enviar dos ventas con referencias distintas antes de que el botón se deshabilitara (ahora hay bloqueo síncrono); los campos de dinero rechazaban separadores de miles colombianos (`50.000`); una respuesta no JSON del servidor mostraba un error técnico.
+
+Comprobado:
+
+- `npm test`: 10 pruebas aprobadas, incluidas migración, datos fiscales congelados, número de caja, comprobante 58/80 mm (pollo 125,5 kg × $12.000 = $1.506.000, nombres largos, 40 artículos) y lectura de cantidades/dinero de la app.
+- `npm run check`: TypeScript aprobado.
+- `npm run test:e2e`: flujo completo en navegador (vendedor y administrador), incluido doble clic sin venta duplicada, stock descontado, cambio en efectivo, filtros, cierre con conciliación y descarga del PDF; sin desplazamiento horizontal en 320, 360, 390, 430, 768 y 1280 px. Capturas en `output/screenshots/`.
+- `expo export --platform android`: bundle Hermes generado. No equivale a probar en un celular real.
+- PDF de muestra renderizados y revisados visualmente (Quick Look de macOS).
+
+Pendiente: prueba en celulares Android/iPhone reales (teclados, áreas seguras, botón atrás) e impresión física en la MTP-3 de 58/80 mm, incluida la legibilidad del logo monocromático.

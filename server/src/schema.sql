@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
  token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), business_name TEXT NOT NULL, paper_width INTEGER NOT NULL CHECK(paper_width IN (58,80)));
-INSERT OR IGNORE INTO settings VALUES (1,'Mi negocio',80);
+INSERT OR IGNORE INTO settings (id,business_name,paper_width) VALUES (1,'Mi negocio',80);
 CREATE TABLE IF NOT EXISTS products (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, price_cents INTEGER NOT NULL CHECK(price_cents>0),
  unit TEXT NOT NULL CHECK(unit IN ('unit','kg')), active INTEGER NOT NULL CHECK(active IN (0,1)),

@@ -1,47 +1,99 @@
-import React,{useCallback,useEffect,useState} from 'react';
+import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {StatusBar} from 'expo-status-bar';
 import {Feather} from '@expo/vector-icons';
-import {Text,View,Pressable,StyleSheet,ActivityIndicator} from 'react-native';
+import {Text,View,Pressable,StyleSheet,ActivityIndicator,Animated,Platform,useWindowDimensions} from 'react-native';
 import {SafeAreaProvider,SafeAreaView} from 'react-native-safe-area-context';
-import {api,API_URL,ApiError,forgetSession,restoreSession,signIn,signOut} from './src/api';
-import {Badge,Button,Card,Field,Header,Metric,Page,colors,cop,date,styles} from './src/ui';
-import type {User,Product,Customer,Platform,Settings,CashSession,Sale,Closure} from './src/types';
+import {api,ApiError,forgetSession,restoreSession,signIn,signOut} from './src/api';
+import {Banner,Logo,ProgressBar,colors,initials,styles,useHardwareBack} from './src/ui';
+import type {User,Product,Customer,Platform as PayPlatform,Settings,CashSession,Sale,Closure,Tab} from './src/types';
+import {LoginScreen} from './src/LoginScreen';
+import {HomeScreen} from './src/HomeScreen';
 import {SaleScreen} from './src/SaleScreen';
 import {CatalogScreen} from './src/CatalogScreen';
 import {CashScreen} from './src/CashScreen';
 import {HistoryScreen} from './src/HistoryScreen';
 import {SettingsScreen} from './src/SettingsScreen';
-const tabs=[{id:'home',name:'Inicio',icon:'grid'},{id:'sale',name:'Vender',icon:'shopping-bag'},{id:'cash',name:'Caja',icon:'inbox'},{id:'catalog',name:'Catálogo',icon:'package'},{id:'history',name:'Historial',icon:'clock'},{id:'settings',name:'Perfil',icon:'user'}] as const;
+// Cinco pestañas caben cómodas desde 320 px; Vender queda al centro, al alcance del pulgar. Perfil se abre desde el avatar.
+const tabs=[{id:'home',name:'Inicio',icon:'home'},{id:'cash',name:'Caja',icon:'inbox'},{id:'sale',name:'Vender',icon:'shopping-cart'},{id:'catalog',name:'Catálogo',icon:'package'},{id:'history',name:'Historial',icon:'clock'}] as const;
+export type Run=(fn:()=>Promise<void>,success?:string)=>void;
 export default function App(){return <SafeAreaProvider><Main/></SafeAreaProvider>;}
 function Main(){
- const [user,setUser]=useState<User|null>(null),[boot,setBoot]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[tab,setTab]=useState('home'),[username,setUsername]=useState(''),[password,setPassword]=useState('');
- const [products,setProducts]=useState<Product[]>([]),[customers,setCustomers]=useState<Customer[]>([]),[platforms,setPlatforms]=useState<Platform[]>([]),[sessions,setSessions]=useState<CashSession[]>([]),[settings,setSettings]=useState<Settings>({business_name:'Venta POS',paper_width:80}),[sale,setSale]=useState<Sale|null>(null),[closure,setClosure]=useState<Closure|null>(null),[sessionFilter,setSessionFilter]=useState(''),[historyVersion,setHistoryVersion]=useState(0);
- const run=useCallback((fn:()=>Promise<void>)=>{setBusy(true);setError('');void fn().catch(async(e:unknown)=>{setError(e instanceof Error?e.message:'Ocurrió un error.');if(e instanceof ApiError&&e.status===401){await forgetSession();setUser(null);}}).finally(()=>setBusy(false));},[]);
+ const {width}=useWindowDimensions();
+ const [user,setUser]=useState<User|null>(null),[boot,setBoot]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState<{text:string;detail?:string}|null>(null),[tab,setTab]=useState<Tab>('home');
+ const [products,setProducts]=useState<Product[]>([]),[customers,setCustomers]=useState<Customer[]>([]),[platforms,setPlatforms]=useState<PayPlatform[]>([]),[sessions,setSessions]=useState<CashSession[]>([]),[settings,setSettings]=useState<Settings>({business_name:"DISTRIBUIDORA & SALSAMENTARIA DANNY'S",paper_width:80}),[sale,setSale]=useState<Sale|null>(null),[closure,setClosure]=useState<Closure|null>(null),[sessionFilter,setSessionFilter]=useState(''),[historyVersion,setHistoryVersion]=useState(0),[catalogTab,setCatalogTab]=useState<'products'|'customers'>('products'),[catalogVersion,setCatalogVersion]=useState(0),[toast,setToast]=useState('');
+ const toastTimer=useRef<ReturnType<typeof setTimeout>>(undefined);
+ const notify=useCallback((text:string)=>{setToast(text);clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(''),2600);},[]);
+ const run=useCallback<Run>((fn,success)=>{setBusy(true);setError(null);void fn().then(()=>{if(success)notify(success);}).catch(async(e:unknown)=>{
+  setError({text:e instanceof Error?e.message:'Ocurrió un error inesperado. Inténtalo nuevamente.',detail:e instanceof ApiError?e.detail:e instanceof Error?undefined:String(e)});
+  if(e instanceof ApiError&&e.status===401&&!e.detail.includes('/auth/login')){await forgetSession();setUser(null);setError({text:'Tu sesión terminó. Ingresa de nuevo para continuar.'});}
+ }).finally(()=>setBusy(false));},[notify]);
  const refresh=useCallback(async()=>{
-  const results=await Promise.all([api<Product[]>('/products'),api<Customer[]>('/customers'),api<Platform[]>('/platforms'),api<CashSession[]>('/cash-sessions'),api<Settings>('/settings')]);setProducts(results[0]);setCustomers(results[1]);setPlatforms(results[2]);setSessions(results[3]);setSettings(results[4]);
+  const results=await Promise.all([api<Product[]>('/products'),api<Customer[]>('/customers'),api<PayPlatform[]>('/platforms'),api<CashSession[]>('/cash-sessions'),api<Settings>('/settings')]);setProducts(results[0]);setCustomers(results[1]);setPlatforms(results[2]);setSessions(results[3]);setSettings(results[4]);
  },[]);
- useEffect(()=>{void restoreSession().then(async u=>{if(u){setUser(u);await refresh();}}).catch(e=>setError(e.message)).finally(()=>setBoot(false));},[]);
- const own=sessions.find(s=>s.opened_by===user?.id&&s.state==='open');const openSessions=sessions.filter(s=>s.state==='open');
- function history(selectedSale:Sale|null=null,selectedClosure:Closure|null=null,filter=''){setSale(selectedSale);setClosure(selectedClosure);setSessionFilter(filter);setHistoryVersion(n=>n+1);setTab('history');}
- const onSale=(s:Sale)=>history(s);const onClosure=(c:Closure)=>history(null,c);
- const logout=()=>run(async()=>{await signOut();setUser(null);setProducts([]);setCustomers([]);setPlatforms([]);setSessions([]);setUsername('');setPassword('');setSale(null);setClosure(null);setSessionFilter('');setTab('home');});
- if(boot)return <SafeAreaView style={local.root}><ActivityIndicator color={colors.green} style={{marginTop:150}}/></SafeAreaView>;
+ useEffect(()=>{void restoreSession().then(async u=>{if(u){setUser(u);await refresh();}}).catch(e=>setError({text:e.message,detail:e instanceof ApiError?e.detail:undefined})).finally(()=>setBoot(false));},[]);
+ // Botón atrás de Android: primero cierra hojas/subpantallas, luego vuelve a Inicio y solo entonces sale.
+ useHardwareBack(()=>{if(user&&tab!=='home'){setTab('home');return true;}return false;});
+ const own=sessions.find(s=>s.opened_by===user?.id&&s.state==='open');
+ function go(target:Tab){setError(null);setTab(target);}
+ function history(selectedSale:Sale|null=null,selectedClosure:Closure|null=null,filter=''){setSale(selectedSale);setClosure(selectedClosure);setSessionFilter(filter);setHistoryVersion(n=>n+1);go('history');}
+ function catalog(sub:'products'|'customers'){setCatalogTab(sub);setCatalogVersion(n=>n+1);go('catalog');}
+ const logout=()=>run(async()=>{await signOut();setUser(null);setProducts([]);setCustomers([]);setPlatforms([]);setSessions([]);setSale(null);setClosure(null);setSessionFilter('');setTab('home');});
+ if(boot)return <SafeAreaView style={local.root}><View style={{flex:1,alignItems:'center',justifyContent:'center',gap:18}}><Logo width={150}/><ActivityIndicator color={colors.green}/></View></SafeAreaView>;
+ const errorBanner=error&&<View style={local.bannerWrap}><Banner text={error.text} detail={error.detail} onClose={()=>setError(null)}/></View>;
+ if(!user)return <SafeAreaView style={local.root} edges={['top','left','right','bottom']}><StatusBar style="dark"/><ProgressBar active={busy}/>{errorBanner}
+  <LoginScreen busy={busy} onSubmit={(username,password)=>run(async()=>{const u=await signIn(username,password);setUser(u);setTab('home');await refresh();})}/></SafeAreaView>;
+ const brand=/DANNY/i.test(settings.business_name)?"DANNY'S":settings.business_name;
  return <SafeAreaView style={local.root} edges={['top','left','right','bottom']}><StatusBar style="dark"/>
- {user&&<View style={local.top}>
-  <View style={local.brandGroup}><View style={local.brand}><Feather name="layers" size={19} color="white"/></View><Text numberOfLines={1} style={local.brandText}>{settings.business_name}</Text></View>
-  <View style={local.topActions}><Badge text={own?'Caja abierta':'Sin caja'}/><Pressable testID="logout-header" accessibilityRole="button" accessibilityLabel="Cerrar sesión" disabled={busy} onPress={logout} style={({pressed})=>[local.logout,(busy||pressed)&&{opacity:0.5}]}><Feather name="log-out" size={16} color={colors.green}/><Text style={local.logoutText}>Cerrar sesión</Text></Pressable></View>
- </View>}
- {error&&<View style={{paddingHorizontal:18,paddingTop:10}}><Pressable onPress={()=>setError('')}><Text accessibilityRole="alert" style={styles.error}>{error} · Toca para ocultar</Text></Pressable></View>}
- {busy&&<View style={local.loading}><ActivityIndicator size="small" color={colors.green}/><Text style={styles.muted}>Procesando…</Text></View>}
- {!user?<Page><View style={{height:35}}/><View style={[local.brand,{width:58,height:58,borderRadius:18}]}><Feather name="layers" size={28} color="white"/></View><Header eyebrow="VENTA POS" title={'Todo tu negocio.\nEn tus manos.'} subtitle="Ventas, caja y clientes con cuentas claras."/><Card><Text style={styles.h2}>Inicia sesión</Text><Field label="Usuario" value={username} onChange={setUsername} placeholder="Tu usuario"/><Field label="Contraseña" value={password} onChange={setPassword} secure placeholder="Tu contraseña"/><Button title="Entrar a mi negocio" disabled={busy||!username||!password} onPress={()=>run(async()=>{const u=await signIn(username,password);setPassword('');setUser(u);await refresh();})}/></Card><Text style={[styles.muted,{fontSize:11}]}>Servidor: {API_URL}</Text><Text style={styles.muted}>El primer administrador se crea con el asistente de instalación del servidor.</Text></Page>:<>
- {tab==='home'&&<Page><Header eyebrow={user.role==='admin'?'PANEL ADMINISTRATIVO':'MI JORNADA'} title={`Hola, ${user.name.split(' ')[0]}`} subtitle={new Intl.DateTimeFormat('es-CO',{dateStyle:'full',timeZone:'America/Bogota'}).format(new Date())}/><View style={[styles.card,{backgroundColor:colors.ink,borderColor:colors.ink,gap:18}]}><Text style={{color:'#BBD3C7',fontSize:12}}>{user.role==='admin'?'VENTAS EN CAJAS ABIERTAS':'VENTAS DE MI CAJA'}</Text><Text style={{fontSize:38,fontWeight:'700',color:'white',letterSpacing:-1}}>{cop(user.role==='admin'?openSessions.reduce((n,s)=>n+s.total_cents,0):own?.total_cents||0)}</Text><View style={styles.row}><Text style={{color:'#BBD3C7'}}>{user.role==='admin'?openSessions.length+' cajas abiertas':(own?.sale_count||0)+' ventas registradas'}</Text><Feather name="trending-up" color="#A9D6B6" size={24}/></View></View><View style={styles.wrap}><Card><Metric label="Efectivo vendido" value={cop(user.role==='admin'?openSessions.reduce((n,s)=>n+s.cash_cents,0):own?.cash_cents||0)}/></Card><Card><Metric label="Pagos electrónicos" value={cop(user.role==='admin'?openSessions.reduce((n,s)=>n+s.electronic_cents,0):own?.electronic_cents||0)}/></Card></View><Button title={own?'+ Registrar una venta':'Abrir mi caja'} onPress={()=>setTab(own?'sale':'cash')}/><Card><Text style={styles.h2}>Accesos rápidos</Text>{[{name:'Revisar caja',icon:'inbox' as const,target:'cash'},{name:'Productos y clientes',icon:'package' as const,target:'catalog'},{name:'Consultar historial',icon:'clock' as const,target:'history'}].map(item=><Pressable key={item.target} style={[styles.row,{paddingVertical:12}]} onPress={()=>item.target==='history'?history():setTab(item.target)}><View style={styles.row}><Feather name={item.icon} size={18} color={colors.green}/><Text style={{color:colors.ink,fontWeight:'600'}}>{item.name}</Text></View><Feather name="chevron-right" size={18} color={colors.muted}/></Pressable>)}</Card>{own&&<Text style={styles.muted}>Caja {own.id.slice(0,8)} · Abierta {date(own.opened_at)}</Text>}<Button secondary title="Actualizar resumen" disabled={busy} onPress={()=>run(refresh)}/></Page>}
- <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen userId={user.id} session={own} products={products} customers={customers} platforms={platforms} refresh={refresh} run={run} onSale={onSale} busy={busy}/></View>
- {tab==='cash'&&<CashScreen sessions={sessions} user={user} refresh={refresh} run={run} busy={busy} onClosure={onClosure} onHistory={id=>history(null,null,id)}/>}
- {tab==='catalog'&&<CatalogScreen products={products} customers={customers} user={user} run={run} refresh={refresh} busy={busy}/>}
- {tab==='history'&&<HistoryScreen key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={customers} sessions={sessions}/>}
- {tab==='settings'&&<SettingsScreen user={user} settings={settings} platforms={platforms} run={run} refresh={refresh} busy={busy} logout={logout}/>}
- <View style={styles.nav}>{tabs.map(t=><Pressable key={t.id} accessibilityRole="tab" accessibilityLabel={t.name} accessibilityState={{selected:tab===t.id}} onPress={()=>{if(t.id==='history')history();else setTab(t.id);}} style={styles.navItem}><Feather name={t.icon} size={20} color={tab===t.id?colors.green:colors.muted}/><Text style={[styles.navText,tab===t.id&&{color:colors.green}]}>{t.name}</Text></Pressable>)}</View>
- </>}
+  <View style={local.top}>
+   <Pressable accessibilityRole="button" accessibilityLabel="Ir a inicio" onPress={()=>go('home')} style={local.brandGroup}>
+    <Logo width={46}/>
+    <View style={{flexShrink:1}}><Text numberOfLines={1} style={local.brandText}>{brand}</Text>{width>=390&&<Text numberOfLines={1} style={local.brandSub}>Distribuidora & Salsamentaria</Text>}</View>
+   </Pressable>
+   <Pressable testID="cash-status" accessibilityRole="button" accessibilityLabel={own?'Caja abierta, ver caja':'Caja cerrada, abrir caja'} onPress={()=>go('cash')} style={[local.cashPill,{backgroundColor:own?colors.greenSoft:colors.orangeSoft}]}>
+    <View style={[local.dot,{backgroundColor:own?colors.green:colors.orange}]}/><Text numberOfLines={1} style={[local.cashText,{color:own?colors.greenDark:colors.orange}]}>{own?`Caja${own.number?' #'+own.number:''}`:'Sin caja'}</Text>
+   </Pressable>
+   <Pressable testID="profile-button" accessibilityRole="button" accessibilityLabel="Mi perfil y configuración" onPress={()=>go('settings')} style={[local.avatar,tab==='settings'&&{borderColor:colors.green,borderWidth:2}]}>
+    <Text style={local.avatarText}>{initials(user.name)}</Text>
+   </Pressable>
+  </View>
+  <View style={{flex:1}}>
+   <ProgressBar active={busy}/>
+   {errorBanner}
+   {tab==='home'&&<HomeScreen user={user} sessions={sessions} busy={busy} run={run} refresh={refresh} go={go} onHistory={()=>history()} onCatalog={catalog}/>}
+   {/* Vender permanece montada: el carrito no se pierde al cambiar de pestaña. */}
+   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen userId={user.id} active={tab==='sale'} session={own} products={products} customers={customers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')}/></View>
+   {tab==='cash'&&<CashScreen sessions={sessions} user={user} refresh={refresh} run={run} busy={busy} onClosure={c=>history(null,c)} onHistory={id=>history(null,null,id)} onSell={()=>go('sale')}/>}
+   {tab==='catalog'&&<CatalogScreen key={catalogVersion} initialTab={catalogTab} products={products} customers={customers} user={user} run={run} refresh={refresh} busy={busy}/>}
+   {tab==='history'&&<HistoryScreen key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={customers} sessions={sessions}/>}
+   {tab==='settings'&&<SettingsScreen user={user} settings={settings} platforms={platforms} run={run} refresh={refresh} busy={busy} logout={logout}/>}
+   {!!toast&&<Toast text={toast}/>}
+  </View>
+  <View style={styles.nav} accessibilityRole="tablist">{tabs.map(t=>{const on=tab===t.id;const center=t.id==='sale';return <Pressable key={t.id} testID={`tab-${t.id}`} accessibilityRole="tab" accessibilityLabel={t.name} accessibilityState={{selected:on}} onPress={()=>t.id==='history'?history():go(t.id)} style={styles.navItem}>
+   {center?<View style={[local.sellIcon,on&&{backgroundColor:colors.greenDark}]}><Feather name={t.icon} size={22} color="white"/></View>:<View style={[local.navPill,on&&{backgroundColor:colors.greenSoft}]}><Feather name={t.icon} size={21} color={on?colors.green:colors.muted}/></View>}
+   <Text numberOfLines={1} style={[styles.navText,on&&{color:colors.green}]}>{t.name}</Text>
+  </Pressable>;})}</View>
  </SafeAreaView>;
 }
-const local=StyleSheet.create({root:{flex:1,backgroundColor:colors.bg},top:{paddingHorizontal:22,paddingVertical:14,flexDirection:'row',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap',borderBottomColor:colors.line,borderBottomWidth:1,backgroundColor:'white'},brand:{width:34,height:34,borderRadius:10,backgroundColor:colors.green,alignItems:'center',justifyContent:'center'},brandGroup:{flex:1,minWidth:105,flexDirection:'row',alignItems:'center',gap:10},brandText:{fontSize:15,fontWeight:'700',color:colors.ink,flexShrink:1},topActions:{flexDirection:'row',alignItems:'center',gap:10},logout:{minHeight:44,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:6,paddingHorizontal:10,borderRadius:10,backgroundColor:colors.mint},logoutText:{fontSize:12,fontWeight:'700',color:colors.green},loading:{flexDirection:'row',gap:8,alignItems:'center',justifyContent:'center',padding:6}});
+function Toast({text}:{text:string}){
+ const y=useRef(new Animated.Value(-20)).current;
+ useEffect(()=>{Animated.spring(y,{toValue:0,useNativeDriver:Platform.OS!=='web'}).start();},[y]);
+ return <View pointerEvents="none" style={local.toastWrap}><Animated.View accessibilityLiveRegion="polite" accessibilityRole="alert" style={[local.toast,{transform:[{translateY:y}]}]}><Feather name="check-circle" size={18} color="white"/><Text style={local.toastText}>{text}</Text></Animated.View></View>;
+}
+const local=StyleSheet.create({
+ root:{flex:1,backgroundColor:colors.bg},
+ top:{paddingHorizontal:12,paddingVertical:6,flexDirection:'row',alignItems:'center',gap:8,borderBottomColor:colors.line,borderBottomWidth:1,backgroundColor:colors.white,minHeight:56},
+ brandGroup:{flex:1,flexDirection:'row',alignItems:'center',gap:8,minWidth:0},
+ brandText:{fontSize:16,fontWeight:'900',color:colors.greenDark,letterSpacing:0.3},
+ brandSub:{fontSize:10,fontWeight:'600',color:colors.muted},
+ cashPill:{flexDirection:'row',alignItems:'center',gap:6,paddingHorizontal:10,minHeight:34,borderRadius:999,flexShrink:0},
+ dot:{width:8,height:8,borderRadius:4},
+ cashText:{fontSize:12,fontWeight:'800'},
+ avatar:{width:38,height:38,borderRadius:19,backgroundColor:colors.green,alignItems:'center',justifyContent:'center',flexShrink:0},
+ avatarText:{color:'white',fontWeight:'800',fontSize:14},
+ bannerWrap:{paddingHorizontal:16,paddingTop:10,width:'100%',maxWidth:760,alignSelf:'center'},
+ navPill:{width:52,height:30,borderRadius:15,alignItems:'center',justifyContent:'center'},
+ sellIcon:{width:52,height:40,borderRadius:20,backgroundColor:colors.green,alignItems:'center',justifyContent:'center',marginTop:-6,shadowColor:colors.green,shadowOpacity:0.35,shadowRadius:6,shadowOffset:{width:0,height:3},elevation:4},
+ toastWrap:{position:'absolute',left:16,right:16,top:10,alignItems:'center',zIndex:30},
+ toast:{width:'100%',maxWidth:520,flexDirection:'row',alignItems:'center',gap:10,backgroundColor:colors.ink,paddingHorizontal:16,paddingVertical:13,borderRadius:14,shadowColor:'#000',shadowOpacity:0.2,shadowRadius:10,elevation:6},
+ toastText:{color:'white',fontWeight:'700',fontSize:14,flex:1},
+});

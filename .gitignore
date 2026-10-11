@@ -21,3 +21,5 @@ tmp/
 *.sqlite-shm
 *.sqlite3-wal
 *.sqlite3-shm
+.vercel
+.env*.local

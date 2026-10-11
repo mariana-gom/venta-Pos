@@ -3,13 +3,15 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { authenticate,admin,createUser,login,hashPassword,publicUser } from './auth.js';
-import { id,now,audit,transaction } from './db.js';
+import { id,now,audit,transaction,BUSINESS_FIELDS } from './db.js';
 import { schemas,validate } from './validation.js';
 import { money,quantity,scaled } from './money.js';
-import { sessionFor,totals,recordSale,saleDetail,closeSession,closureDetail,fail } from './service.js';
+import { sessionFor,totals,recordSale,saleDetail,closeSession,closureDetail,fail,SESSION_NUMBER } from './service.js';
 import {storedPdf,generateDocuments} from './documents.js';
 export function createApp(db) {
  const app=express();app.disable('x-powered-by');app.use(helmet());
+ // Detrás de un proxy (Railway, Render, Nginx) indica cuántos saltos confiar para que el límite de login use la IP real.
+ if(process.env.TRUST_PROXY)app.set('trust proxy',/^\d+$/.test(process.env.TRUST_PROXY)?Number(process.env.TRUST_PROXY):process.env.TRUST_PROXY);
  const origins=(process.env.CORS_ORIGINS||'http://localhost:8097,http://127.0.0.1:8097').split(',').map(s=>s.trim());
  app.use((req,res,next)=>{
   const origin=req.headers.origin;
@@ -37,9 +39,12 @@ export function createApp(db) {
   const hash=await hashPassword(req.input.password);
   transaction(db,()=>{db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash,u.id);db.prepare('DELETE FROM auth_sessions WHERE user_id=?').run(u.id);audit(db,req.user.id,'user.password_reset',u.id);});res.json({ok:true});
  });
- app.get('/api/settings',(_,res)=>res.json(db.prepare('SELECT business_name,paper_width FROM settings WHERE id=1').get()));
+ const settingsQuery=`SELECT business_name,paper_width,${BUSINESS_FIELDS.join(',')} FROM settings WHERE id=1`;
+ app.get('/api/settings',(_,res)=>res.json(db.prepare(settingsQuery).get()));
  app.put('/api/settings',admin,validate(schemas.settings),(req,res)=>{
-  transaction(db,()=>{db.prepare('UPDATE settings SET business_name=?,paper_width=? WHERE id=1').run(req.input.business_name,req.input.paper_width);audit(db,req.user.id,'settings.update','1',req.input);});res.json(req.input);
+  // Campos fiscales omitidos conservan su valor; una cadena vacía los borra del comprobante.
+  const fields=BUSINESS_FIELDS.filter(f=>req.input[f]!==undefined);
+  const result=transaction(db,()=>{db.prepare(`UPDATE settings SET business_name=?,paper_width=?${fields.map(f=>`,${f}=?`).join('')} WHERE id=1`).run(req.input.business_name,req.input.paper_width,...fields.map(f=>req.input[f]));audit(db,req.user.id,'settings.update','1',req.input);return db.prepare(settingsQuery).get();});res.json(result);
  });
  app.get('/api/products',(req,res)=>res.json(db.prepare(`SELECT * FROM products ${req.user.role==='admin'?'': 'WHERE active=1'} ORDER BY name`).all()));
  const saveProduct=(req,res)=>res.json(transaction(db,()=>{
@@ -76,7 +81,8 @@ export function createApp(db) {
   transaction(db,()=>{if(!db.prepare('SELECT id FROM platforms WHERE id=?').get(req.params.id))fail(404,'Plataforma no encontrada.');db.prepare('UPDATE platforms SET name=?,active=? WHERE id=?').run(req.input.name,Number(req.input.active),req.params.id);audit(db,req.user.id,'platform.update',req.params.id,req.input);});res.json({id:req.params.id,...req.input});
  });
  app.get('/api/cash-sessions',(req,res)=>{
-  const rows=req.user.role==='admin'?db.prepare('SELECT c.*,u.name AS opener_name FROM cash_sessions c JOIN users u ON u.id=c.opened_by ORDER BY c.opened_at DESC').all():db.prepare('SELECT c.*,u.name AS opener_name FROM cash_sessions c JOIN users u ON u.id=c.opened_by WHERE c.opened_by=? ORDER BY c.opened_at DESC').all(req.user.id);
+  const columns=`c.*,u.name AS opener_name,${SESSION_NUMBER} AS number`;
+  const rows=req.user.role==='admin'?db.prepare(`SELECT ${columns} FROM cash_sessions c JOIN users u ON u.id=c.opened_by ORDER BY c.opened_at DESC`).all():db.prepare(`SELECT ${columns} FROM cash_sessions c JOIN users u ON u.id=c.opened_by WHERE c.opened_by=? ORDER BY c.opened_at DESC`).all(req.user.id);
   res.json(rows.map(c=>({...c,...totals(db,c.id)})));
  });
  app.post('/api/cash-sessions',validate(schemas.opening),(req,res)=>res.status(201).json(transaction(db,()=>{
@@ -106,7 +112,7 @@ export function createApp(db) {
   res.type('pdf').set('Content-Disposition',`inline; filename="venta-${sale.number}-${width}mm.pdf"`).send(await storedPdf(db,'sale',sale,width));
  });
  app.post('/api/cash-sessions/:id/close',admin,validate(schemas.closing),async(req,res)=>{const closure=closeSession(db,req.user,req.params.id,req.input);res.status(201).json({...closure,...await generateDocuments(db,'closure',closure)});});
- app.get('/api/closures',admin,(_,res)=>res.json(db.prepare('SELECT * FROM closures ORDER BY created_at DESC').all().map(c=>({...c,snapshot:JSON.parse(c.snapshot)}))));
+ app.get('/api/closures',admin,(_,res)=>res.json(db.prepare(`SELECT cl.*,${SESSION_NUMBER} AS session_number FROM closures cl JOIN cash_sessions c ON c.id=cl.session_id ORDER BY cl.created_at DESC`).all().map(c=>({...c,snapshot:JSON.parse(c.snapshot)}))));
  app.get('/api/closures/:id',admin,(req,res)=>res.json(closureDetail(db,req.params.id)));
  app.post('/api/closures/:id/notes',admin,validate(schemas.note),(req,res)=>res.status(201).json(transaction(db,()=>{
   closureDetail(db,req.params.id);const noteId=id();db.prepare('INSERT INTO closure_notes VALUES (?,?,?,?,?)').run(noteId,req.params.id,req.user.id,req.input.note,now());audit(db,req.user.id,'closure.annotate',req.params.id,req.input);return closureDetail(db,req.params.id);

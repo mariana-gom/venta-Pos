@@ -2,8 +2,11 @@ import { id, now, audit, transaction } from './db.js';
 import { money, quantity, subtotal } from './money.js';
 import { digest } from './auth.js';
 export const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
+// Número corto y legible de caja (#1, #2…). Las cajas nunca se borran, así que el orden de inserción es estable.
+export const SESSION_NUMBER='(SELECT COUNT(*) FROM cash_sessions x WHERE x.rowid<=c.rowid)';
+const sessionNumber=(db,sessionId)=>db.prepare(`SELECT ${SESSION_NUMBER} AS n FROM cash_sessions c WHERE c.id=?`).get(sessionId)?.n??null;
 export function sessionFor(db,user,sessionId) {
- const session=db.prepare('SELECT c.*,u.name AS opener_name FROM cash_sessions c JOIN users u ON u.id=c.opened_by WHERE c.id=?').get(sessionId);
+ const session=db.prepare(`SELECT c.*,u.name AS opener_name,${SESSION_NUMBER} AS number FROM cash_sessions c JOIN users u ON u.id=c.opened_by WHERE c.id=?`).get(sessionId);
  if(!session) fail(404,'Caja no encontrada.');
  if(user.role!=='admin' && session.opened_by!==user.id) fail(403,'No puedes acceder a una caja ajena.');
  return session;
@@ -19,7 +22,7 @@ export function saleDetail(db,user,saleId) {
  const sale=db.prepare('SELECT * FROM sales WHERE id=?').get(saleId);
  if(!sale) fail(404,'Venta no encontrada.');
  if(user.role!=='admin' && sale.seller_id!==user.id) fail(403,'No puedes consultar una venta ajena.');
- return {...sale,snapshot:JSON.parse(sale.snapshot),items:db.prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid').all(saleId),payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(saleId)};
+ return {...sale,session_number:sessionNumber(db,sale.session_id),snapshot:JSON.parse(sale.snapshot),items:db.prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid').all(saleId),payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(saleId)};
 }
 export function recordSale(db,user,input) {
  return transaction(db,()=>{
@@ -51,7 +54,8 @@ export function recordSale(db,user,input) {
   const saleId=id(); const created=now();
   const number=db.prepare('SELECT COALESCE(MAX(number),0)+1 AS n FROM sales').get().n;
   const settings=db.prepare('SELECT * FROM settings WHERE id=1').get();
-  const snapshot={business_name:settings.business_name,customer_name:customer.name,customer_city:customer.city,seller_name:user.name};
+  // Los datos del negocio quedan congelados en la venta: el comprobante histórico no cambia si se editan después.
+  const snapshot={business_name:settings.business_name,business_nit:settings.business_nit,business_address:settings.business_address,business_phone:settings.business_phone,business_city:settings.business_city,customer_name:customer.name,customer_city:customer.city,seller_name:user.name};
   db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?,?,?,?)').run(saleId,number,session.id,user.id,customer.id,created,total,JSON.stringify(snapshot),input.request_key,requestHash);
   for(const item of items) {
    db.prepare('INSERT INTO sale_items VALUES (?,?,?,?,?,?,?,?)').run(item.id,saleId,item.product_id,item.name,item.unit,item.quantity_milli,item.price_cents,item.subtotal_cents);
@@ -65,7 +69,7 @@ export function recordSale(db,user,input) {
 export function closureDetail(db,closureId) {
  const closure=db.prepare('SELECT * FROM closures WHERE id=?').get(closureId);
  if(!closure) fail(404,'Cierre no encontrado.');
- return {...closure,snapshot:JSON.parse(closure.snapshot),annotations:db.prepare('SELECT n.*,u.name AS author_name FROM closure_notes n JOIN users u ON u.id=n.author_id WHERE closure_id=? ORDER BY n.created_at').all(closureId)};
+ return {...closure,session_number:sessionNumber(db,closure.session_id),snapshot:JSON.parse(closure.snapshot),annotations:db.prepare('SELECT n.*,u.name AS author_name FROM closure_notes n JOIN users u ON u.id=n.author_id WHERE closure_id=? ORDER BY n.created_at').all(closureId)};
 }
 export function closeSession(db,user,sessionId,input) {
  if(user.role!=='admin') fail(403,'Solo el administrador puede cerrar la caja.');
