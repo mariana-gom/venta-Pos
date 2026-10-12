@@ -1,4 +1,5 @@
 import express from 'express';
+import {mock} from 'node:test';
 import {chromium} from '@playwright/test';
 import {randomBytes} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
@@ -79,7 +80,7 @@ try{
  await id('tab-sale').click();await id('customer-picker').click();await page.getByRole('button',{name:'Ana, Bogotá'}).click();await id('add-Gaseosa').click();await id('checkout').click();await page.getByRole('radio',{name:'Efectivo'}).click();
  await id('cash-received').fill('10.000');await expect(id('cash-change')).toContainText('6.000');await id('confirm-sale').click();await expect(id('sale-done')).toContainText('Cambio para el cliente');
  // Historial con filtros y persistencia tras recarga.
- await id('tab-history').click();await expect(id('sale-row-1')).toBeVisible();await expect(id('history-total')).toContainText('1.522.000');await capture('historial');
+ await id('tab-history').click();await expect(page.getByText('Solo puedes consultar las ventas del día actual')).toBeVisible();for(const label of ['Ayer','7 días','Todo','Rango'])await expect(page.getByRole('button',{name:label,exact:true})).toHaveCount(0);await expect(id('sale-row-1')).toBeVisible();await expect(id('history-total')).toContainText('1.522.000');await capture('historial');
  await page.getByRole('button',{name:'Efectivo',exact:true}).click();await expect(id('history-total')).toContainText('4.000');await expect(id('sale-row-1')).toHaveCount(0);
  await page.reload();await expect(page.getByText('Hola, Vendedora')).toBeVisible();await expect(id('stat-total')).toContainText('1.522.000');await capture('inicio');
  await id('tab-catalog').click();await capture('catalogo');
@@ -109,6 +110,33 @@ try{
  await id('review-close').click();await page.getByRole('button',{name:'Confirmar cierre definitivo'}).click();await expect(id('closure-detail')).toBeVisible();await expect(page.getByText('Cierre #0001')).toBeVisible();await capture('cierre');
  await page.getByRole('button',{name:'Ver ventas incluidas'}).click();await expect(id('sale-row-1')).toBeVisible();
  await id('tab-catalog').click();await id('catalog-Gaseosa').click();await expect(id('catalog-stock')).toHaveValue('6');await capture('catalogo-editar');
+ // Permisos y cambio de día con reloj controlado, sobre la misma interfaz exportada.
+ const before=new Date('2026-10-13T04:59:30.000Z');mock.timers.enable({apis:['Date'],now:before});
+ async function auth(username){const r=await fetch(origin+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});return(await r.json()).token;}
+ const sellerToken=await auth('seller-test'),adminToken=await auth('admin-test');
+ async function request(path,token,body){const r=await fetch(origin+'/api'+path,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});if(!r.ok)throw new Error(await r.text());return r.json();}
+ const cs=await request('/cash-sessions',sellerToken,{opening:'0'}),products=await request('/products',sellerToken),customers=await request('/customers',sellerToken);
+ const record=sold_at=>request('/sales',sellerToken,{session_id:cs.id,customer_id:customers[0].id,items:[{product_id:products[0].id,quantity:'1'}],method:'cash',sold_at,request_key:crypto.randomUUID()});
+ const allowed=await record('2026-10-13T04:59:29.000Z'),historic=await record('2026-10-12T04:59:59.999Z');
+ const midnightContext=await browser.newContext({viewport:{width:390,height:844}});page=await midnightContext.newPage();page.on('pageerror',error=>errors.push(error.message));
+ await page.clock.install({time:before});await page.goto(origin);await signIn('seller-test');await id('tab-history').click();
+ await expect(id(`sale-row-${allowed.number}`)).toBeVisible();await expect(id(`sale-row-${historic.number}`)).toHaveCount(0);
+ await id(`sale-row-${allowed.number}`).click();await expect(id('sale-detail')).toBeVisible();await id('view-receipt').click();await expect(id('receipt-preview')).toBeVisible();
+ // Sin señal al cruzar medianoche: tampoco se conserva el detalle ni el comprobante anterior.
+ await page.route('**/api/**',route=>route.abort('internetdisconnected'));
+ mock.timers.setTime(Date.parse('2026-10-13T05:00:01.000Z'));await page.clock.fastForward(31000);
+ await expect(id('receipt-preview')).toHaveCount(0);await expect(id('sale-detail')).toHaveCount(0);await expect(page.locator('[data-testid^="sale-row-"]')).toHaveCount(0);
+ const cached=await page.evaluate(()=>JSON.parse(localStorage.getItem('pos-cache')));if(cached.sessions.some(s=>s.sale_count!==0||s.total_cents!==0))throw new Error('Quedaron totales históricos en la caché');
+ await page.unroute('**/api/**');
+ const next=await record('2026-10-13T05:00:00.000Z');await id('tab-history').click();await expect(id(`sale-row-${next.number}`)).toBeVisible();
+ await expect(id(`sale-row-${allowed.number}`)).toHaveCount(0);
+ const direct=await fetch(origin+`/api/sales/${allowed.id}`,{headers:{Authorization:`Bearer ${sellerToken}`}});if(direct.status!==403)throw new Error('El vendedor accedió al detalle de ayer');
+ // Administrador: filtros históricos, detalle y descarga permanecen disponibles.
+ const adminContext=await browser.newContext({viewport:{width:390,height:844}});page=await adminContext.newPage();await page.clock.install({time:new Date('2026-10-13T05:00:01Z')});await page.goto(origin);await signIn('admin-test');await id('tab-history').click();
+ await page.getByRole('button',{name:'Ayer',exact:true}).click();await expect(id(`sale-row-${allowed.number}`)).toBeVisible();await id(`sale-row-${allowed.number}`).click();await expect(id('sale-detail')).toBeVisible();await id('view-receipt').click();await expect(id('receipt-pdf')).toBeVisible();
+ await page.getByRole('button',{name:'Volver al detalle de la venta'}).click();await id('tab-history').click();await page.getByRole('button',{name:'Rango',exact:true}).click();await expect(page.getByLabel('Desde')).toBeVisible();await expect(page.getByLabel('Hasta')).toBeVisible();
+ if((await request('/sales',adminToken)).count!==7)throw new Error('Se perdieron ventas históricas');
+ mock.timers.reset();
  if(errors.length)throw new Error(errors.join('\n'));
- console.log(`E2E móvil web: login, apertura, venta kg/unidades/decimales, carrito, cliente en flujo, doble clic sin duplicar, stock, comprobante y PDF, cambio en efectivo, filtros, recarga, logout, datos fiscales y cierre, y modo ruta sin señal (venta, cliente nuevo, sincronización) verificados. Capturas en ${WIDTHS.join(', ')} px.`);
+ console.log(`E2E móvil web: login, apertura, venta kg/unidades/decimales, carrito, cliente en flujo, doble clic sin duplicar, stock, comprobante y PDF, cambio en efectivo, filtros, recarga, logout, datos fiscales y cierre, modo ruta sin señal, permisos por rol y cambio de día sin señal con purga de detalle/comprobante/caché verificados. Capturas en ${WIDTHS.join(', ')} px.`);
 }catch(error){if(page)await page.screenshot({path:join(shots,'fallo.png'),fullPage:true}).catch(()=>{});throw error;}finally{if(browser)await browser.close();await new Promise(r=>server.close(r));db.close();rmSync(directory,{recursive:true,force:true});}

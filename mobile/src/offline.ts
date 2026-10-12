@@ -95,6 +95,8 @@ export async function printLocal(sale: Sale, width: 58 | 80, action: 'print' | '
   const mmToPt = (mm: number) => Math.round(mm * 72 / 25.4);
   if (action === 'print') { await Print.printAsync({html, width: mmToPt(width)}); return; }
   const {uri} = await Print.printToFileAsync({html, width: mmToPt(width)});
-  if (!await Sharing.isAvailableAsync()) throw new Error('Este celular no permite compartir archivos.');
-  await Sharing.shareAsync(uri, {mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Compartir comprobante'});
+  try {
+    if (!await Sharing.isAvailableAsync()) throw new Error('Este celular no permite compartir archivos.');
+    await Sharing.shareAsync(uri, {mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Compartir comprobante'});
+  } finally { await FileSystem.deleteAsync(uri, {idempotent: true}); }
 }

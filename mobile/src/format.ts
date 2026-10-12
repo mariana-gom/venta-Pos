@@ -12,18 +12,18 @@ export const receiptNumber = (n: number) => `#${String(n).padStart(4, '0')}`;
 export const unitLabel = (unit: string) => unit === 'kg' ? 'kg' : 'und';
 
 /** Fecha calendario de Colombia (AAAA-MM-DD), desplazada en días. */
-export function bogotaDay(offsetDays = 0, from = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {year: 'numeric', month: '2-digit', day: '2-digit', timeZone: TZ}).format(from);
+export function bogotaDay(offsetDays = 0, from = new Date(), timeZone = TZ) {
+  const parts = new Intl.DateTimeFormat('en-CA', {year: 'numeric', month: '2-digit', day: '2-digit', timeZone}).format(from);
   const d = new Date(`${parts}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + offsetDays);
   return d.toISOString().slice(0, 10);
 }
 /** "Hoy", "Ayer" o "sábado, 10 de octubre" para agrupar el historial. */
-export function dayLabel(value: string) {
-  const day = bogotaDay(0, new Date(value));
-  if (day === bogotaDay(0)) return 'Hoy';
-  if (day === bogotaDay(-1)) return 'Ayer';
-  return new Intl.DateTimeFormat('es-CO', {weekday: 'long', day: 'numeric', month: 'long', timeZone: TZ}).format(new Date(value));
+export function dayLabel(value: string, timeZone = TZ) {
+  const day = bogotaDay(0, new Date(value), timeZone);
+  if (day === bogotaDay(0, new Date(), timeZone)) return 'Hoy';
+  if (day === bogotaDay(-1, new Date(), timeZone)) return 'Ayer';
+  return new Intl.DateTimeFormat('es-CO', {weekday: 'long', day: 'numeric', month: 'long', timeZone}).format(new Date(value));
 }
 export const isIsoDate = (text: string) => /^\d{4}-\d{2}-\d{2}$/.test(text) && !Number.isNaN(new Date(`${text}T12:00:00Z`).getTime());
 

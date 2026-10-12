@@ -1,37 +1,48 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Pressable, Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import {api, ApiError, documentAction} from './api';
+import {canDisplaySale} from './businessDay';
 import {Receipt} from './Receipt';
 import {printLocal, saleTitle, type QueuedSale} from './offline';
 import {Badge, Banner, Button, Card, Choice, Divider, Empty, Field, FooterBar, Header, IconButton, InfoRow, Loading, Page, SearchBar, Section, Segmented, Sheet, bogotaDay, colors, cop, date, dayLabel, diff, isIsoDate, normalizeSearch, quantityLabel, receiptNumber, shortDate, signed, styles, time, useBack} from './ui';
 import type {Sale, Closure, SalesPage, Settings, User, Customer, CashSession} from './types';
 import type {Run} from '../App';
-type Props = {user: User; settings: Settings; run: Run; busy: boolean; initialSale: Sale | null; initialClosure: Closure | null; sessionFilter: string; clearInitial: () => void; customers: Customer[]; sessions: CashSession[]; queue: QueuedSale[]};
+type Props = {businessDate: string; user: User; settings: Settings; run: Run; busy: boolean; initialSale: Sale | null; initialClosure: Closure | null; sessionFilter: string; clearInitial: () => void; customers: Customer[]; sessions: CashSession[]; queue: QueuedSale[]};
 type Period = 'today' | 'yesterday' | 'week' | 'all' | 'range';
 const PERIODS: {id: Period; name: string}[] = [{id: 'today', name: 'Hoy'}, {id: 'yesterday', name: 'Ayer'}, {id: 'week', name: '7 días'}, {id: 'all', name: 'Todo'}, {id: 'range', name: 'Rango'}];
 const methodName = (s: {method?: string; platform_name?: string | null}) => s.method === 'cash' ? 'Efectivo' : s.platform_name || 'Electrónico';
 
-export function HistoryScreen({user, settings, run, busy, initialSale, initialClosure, sessionFilter, clearInitial, customers, sessions, queue}: Props) {
+export function HistoryScreen({businessDate, user, settings, run, busy, initialSale, initialClosure, sessionFilter, clearInitial, customers, sessions, queue}: Props) {
   const admin = user.role === 'admin';
   const [tab, setTab] = useState(initialClosure ? 'closures' : 'sales'), [activeSession, setActiveSession] = useState(sessionFilter);
-  const [sale, setSale] = useState<Sale | null>(initialSale), [receipt, setReceipt] = useState(!!initialSale), [closure, setClosure] = useState<Closure | null>(initialClosure);
-  const [page, setPage] = useState<SalesPage | null>(null), [list, setList] = useState<Sale[]>([]), [closures, setClosures] = useState<Closure[] | null>(null);
-  const [period, setPeriod] = useState<Period>(sessionFilter ? 'all' : 'today'), [from, setFrom] = useState(''), [to, setTo] = useState(''), [method, setMethod] = useState(''), [customer, setCustomer] = useState(''), [seller, setSeller] = useState('');
+  const [storedSale, setSale] = useState<Sale | null>(initialSale), [receipt, setReceipt] = useState(!!initialSale), [closure, setClosure] = useState<Closure | null>(initialClosure);
+  const [storedPage, setPage] = useState<SalesPage | null>(null), [storedList, setList] = useState<Sale[]>([]), [closures, setClosures] = useState<Closure[] | null>(null);
+  const [period, setPeriod] = useState<Period>(admin && sessionFilter ? 'all' : 'today'), [from, setFrom] = useState(''), [to, setTo] = useState(''), [method, setMethod] = useState(''), [customer, setCustomer] = useState(''), [seller, setSeller] = useState('');
   const [filters, setFilters] = useState(false), [customerSearch, setCustomerSearch] = useState(''), [showGroups, setShowGroups] = useState(false), [group, setGroup] = useState('method');
   const [width, setWidth] = useState<58 | 80>(settings.paper_width), [note, setNote] = useState('');
+  const zone = settings.time_zone || 'America/Bogota';
+  const allowed = (s: Sale) => canDisplaySale(user, s, businessDate, zone);
+  const sale = storedSale && allowed(storedSale) ? storedSale : null;
+  const page = admin || storedPage?.access.date === businessDate ? storedPage : null;
+  const list = storedList.filter(allowed), visibleQueue = queue.filter(q => allowed(q.sale));
+  const request = useRef(0), previousDate = useRef(businessDate), currentDate = useRef(businessDate); currentDate.current = businessDate;
+  useEffect(() => { if (previousDate.current === businessDate) return; previousDate.current = businessDate; request.current++; setPage(null); setList([]); if (!admin) { setSale(null); setReceipt(false); clearInitial(); } }, [businessDate]);
+  useEffect(() => () => { request.current++; }, []);
   useBack(!!sale || !!closure, back);
 
   const range = useMemo(() => {
-    if (period === 'today') return {from: bogotaDay(0), to: bogotaDay(0)};
-    if (period === 'yesterday') return {from: bogotaDay(-1), to: bogotaDay(-1)};
-    if (period === 'week') return {from: bogotaDay(-6), to: bogotaDay(0)};
+    if (!admin) return {from: '', to: ''};
+    if (period === 'today') return {from: businessDate, to: businessDate};
+    if (period === 'yesterday') return {from: bogotaDay(-1, new Date(`${businessDate}T12:00:00Z`), 'UTC'), to: bogotaDay(-1, new Date(`${businessDate}T12:00:00Z`), 'UTC')};
+    if (period === 'week') return {from: bogotaDay(-6, new Date(`${businessDate}T12:00:00Z`), 'UTC'), to: businessDate};
     if (period === 'range') return {from: isIsoDate(from) ? from : '', to: isIsoDate(to) ? to : ''};
     return {from: '', to: ''};
-  }, [period, from, to]);
+  }, [period, from, to, businessDate, admin]);
   const rangeError = period === 'range' && ((from && !isIsoDate(from)) || (to && !isIsoDate(to))) ? 'Usa el formato AAAA-MM-DD, por ejemplo 2026-10-01' : period === 'range' && range.from && range.to && range.from > range.to ? 'La fecha inicial debe ser anterior a la final' : null;
 
   async function load(next = 1) {
+    const ticket = ++request.current, requestedDate = businessDate;
     const params = new URLSearchParams({page: String(next)});
     if (activeSession) params.set('session_id', activeSession);
     if (method) params.set('method', method);
@@ -40,12 +51,13 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
     if (customer) params.set('customer_id', customer);
     if (seller) params.set('seller_id', seller);
     const result = await api<SalesPage>('/sales?' + params);
+    if (ticket !== request.current || requestedDate !== currentDate.current || (!admin && result.access.date !== currentDate.current)) return;
     setPage(result); setList(current => next === 1 ? result.sales : [...current, ...result.sales]);
   }
   const [noSignal, setNoSignal] = useState(false);
   // Sin señal no es un error: se muestran las ventas guardadas en el celular y un aviso.
   const loadSafe = (next = 1) => load(next).then(() => setNoSignal(false)).catch(e => { if (e instanceof ApiError && e.status === 0) setNoSignal(true); else throw e; });
-  useEffect(() => { if (tab === 'sales' && !rangeError) run(() => loadSafe(1)); }, [tab, range.from, range.to, method, customer, seller, activeSession]);
+  useEffect(() => { if (tab === 'sales' && !rangeError) run(() => loadSafe(1)); }, [tab, range.from, range.to, method, customer, seller, activeSession, businessDate]);
   useEffect(() => { if (tab === 'closures' && admin) run(async () => setClosures(await api<Closure[]>('/closures'))); }, [tab]);
 
   function back() { if (receipt && sale) { setReceipt(false); return; } setSale(null); setClosure(null); setReceipt(false); clearInitial(); }
@@ -156,7 +168,7 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
   // ── Listado
   const totals = page?.groups.method?.reduce((a, g) => ({count: a.count + g.count, total: a.total + g.total_cents}), {count: 0, total: 0});
   const sections: {day: string; items: Sale[]}[] = [];
-  for (const s of list) { const day = dayLabel(s.created_at); const last = sections[sections.length - 1]; if (last?.day === day) last.items.push(s); else sections.push({day, items: [s]}); }
+  for (const s of list) { const day = dayLabel(s.created_at, zone); const last = sections[sections.length - 1]; if (last?.day === day) last.items.push(s); else sections.push({day, items: [s]}); }
   const activeChips = [
     activeSession && {key: 'session', text: `Caja${sessionNumber ? ' #' + sessionNumber : ''}`, clear: () => setActiveSession('')},
     customer && {key: 'customer', text: customerName(customer) || 'Cliente', clear: () => setCustomer('')},
@@ -167,10 +179,11 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
     <Header eyebrow="HISTORIAL" title={tab === 'sales' ? 'Ventas' : 'Cierres de caja'}/>
     {admin && <Segmented items={[{id: 'sales', name: 'Ventas'}, {id: 'closures', name: 'Cierres'}]} value={tab} onChange={setTab} testID="history-tabs"/>}
     {tab === 'sales' ? <>
+      {!admin && <Banner tone="gray" text="Solo puedes consultar las ventas del día actual"/>}
       {noSignal && <Banner tone="gray" text="Sin señal: el historial del sistema se verá al recuperar internet. Abajo están las ventas guardadas en este celular."/>}
-      {queue.length > 0 && <Section title={`Por subir (${queue.length})`}>
+      {visibleQueue.length > 0 && <Section title={`Por subir (${visibleQueue.length})`}>
         <View style={{backgroundColor: colors.yellowSoft, borderRadius: 16, overflow: 'hidden'}}>
-          {queue.map((q, i) => <Pressable key={q.key} testID={`queued-${q.provisional}`} accessibilityRole="button" accessibilityLabel={`Venta ${q.provisional} por subir`} onPress={() => { setSale(q.sale); setReceipt(false); }}
+          {visibleQueue.map((q, i) => <Pressable key={q.key} testID={`queued-${q.provisional}`} accessibilityRole="button" accessibilityLabel={`Venta ${q.provisional} por subir`} onPress={() => { setSale(q.sale); setReceipt(false); }}
             style={[{flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14, minHeight: 60}, i > 0 && {borderTopWidth: 1, borderTopColor: '#F1E2B3'}]}>
             <View style={{flex: 1, gap: 2}}>
               <Text style={{fontSize: 15, fontWeight: '800', color: colors.ink}}>Venta {q.provisional}</Text>
@@ -181,8 +194,8 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
           </Pressable>)}
         </View>
       </Section>}
-      <Choice items={PERIODS} value={period} onChange={v => setPeriod(v as Period)}/>
-      {period === 'range' && <View style={[styles.row, {alignItems: 'flex-start', gap: 10}]}>
+      {admin && <Choice items={PERIODS} value={period} onChange={v => setPeriod(v as Period)}/>}
+      {admin && period === 'range' && <View style={[styles.row, {alignItems: 'flex-start', gap: 10}]}>
         <View style={{flex: 1}}><Field label="Desde" kind="date" value={from} onChange={setFrom} placeholder={bogotaDay(-30)}/></View>
         <View style={{flex: 1}}><Field label="Hasta" kind="date" value={to} onChange={setTo} placeholder={bogotaDay(0)}/></View>
       </View>}
@@ -203,10 +216,10 @@ export function HistoryScreen({user, settings, run, busy, initialSale, initialCl
       </Card>}
 
       {!page && busy && <Loading text="Buscando ventas…"/>}
-      {page && list.length === 0 && <Empty icon="calendar" title={period === 'today' ? 'Sin ventas hoy' : 'Sin ventas en este filtro'} text={period === 'today' ? 'Las ventas confirmadas hoy aparecerán aquí.' : 'Prueba otro periodo o quita filtros.'} action={period !== 'all' || activeChips.length ? 'Ver todas las ventas' : undefined} onAction={() => { setPeriod('all'); setMethod(''); setCustomer(''); setSeller(''); setActiveSession(''); }}/>}
+      {page && list.length === 0 && <Empty icon="calendar" title={period === 'today' ? 'Sin ventas hoy' : 'Sin ventas en este filtro'} text={period === 'today' ? 'Las ventas confirmadas hoy aparecerán aquí.' : 'Prueba otro periodo o quita filtros.'} action={admin ? 'Ver todas las ventas' : activeChips.length || method ? 'Quitar filtros' : undefined} onAction={() => { setPeriod(admin ? 'all' : 'today'); setMethod(''); setCustomer(''); setSeller(''); setActiveSession(''); }}/>}
       {sections.map(section => <Section key={section.day} title={section.day.charAt(0).toUpperCase() + section.day.slice(1)}>
         <View style={{backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.line, overflow: 'hidden'}}>
-          {section.items.map((s, i) => <Pressable key={s.id} testID={`sale-row-${s.number}`} accessibilityRole="button" accessibilityLabel={`Venta ${receiptNumber(s.number)}, ${s.snapshot.customer_name}, ${cop(s.total_cents)}`} onPress={() => run(async () => { setSale(await api<Sale>(`/sales/${s.id}`)); setReceipt(false); })}
+          {section.items.map((s, i) => <Pressable key={s.id} testID={`sale-row-${s.number}`} accessibilityRole="button" accessibilityLabel={`Venta ${receiptNumber(s.number)}, ${s.snapshot.customer_name}, ${cop(s.total_cents)}`} onPress={() => run(async () => { const requestedDate = businessDate, ticket = ++request.current; const detail = await api<Sale>(`/sales/${s.id}`); if (ticket === request.current && requestedDate === currentDate.current) { setSale(detail); setReceipt(false); } })}
             style={({pressed}) => [{flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14, minHeight: 64}, i > 0 && {borderTopWidth: 1, borderTopColor: colors.line}, pressed && {backgroundColor: colors.greenSoft}]}>
             <View style={{flex: 1, gap: 2}}>
               <Text style={{fontSize: 15, fontWeight: '800', color: colors.ink}}>Venta {receiptNumber(s.number)}</Text>

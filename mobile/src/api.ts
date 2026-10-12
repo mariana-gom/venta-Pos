@@ -6,6 +6,13 @@ import * as Print from 'expo-print';
 import type {User} from './types';
 import {loadCache} from './offline';
 let token='';
+const documentUrls=new Set<string>();
+export async function clearDocumentCache(){
+ if(Platform.OS==='web'){for(const url of documentUrls)URL.revokeObjectURL(url);documentUrls.clear();return;}
+ const dir=FileSystem.cacheDirectory;if(!dir)return;
+ const names=await FileSystem.readDirectoryAsync(dir);
+ await Promise.all(names.filter(name=>/^comprobante-[a-z0-9-]+-(58|80)mm\.pdf$/.test(name)).map(name=>FileSystem.deleteAsync(dir+name,{idempotent:true})));
+}
 // Estado de conexión observado en cada llamada: el modo ruta lo usa para guardar ventas y subirlas después.
 const listeners=new Set<(online:boolean)=>void>();let online=true;
 function setOnline(value:boolean){if(value!==online){online=value;listeners.forEach(l=>l(value));}}
@@ -16,7 +23,7 @@ export const API_URL=(process.env.EXPO_PUBLIC_API_URL||'http://localhost:4317').
 export class ApiError extends Error { constructor(message:string,public status:number,public detail=''){super(message);} }
 export async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{
  let response:Response;
- try{response=await fetch(API_URL+'/api'+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});setOnline(true);}
+ try{response=await fetch(API_URL+'/api'+path,{method,cache:'no-store',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});setOnline(true);}
  catch(e){setOnline(false);throw new ApiError('No hay conexión con el servidor. Revisa el internet o el Wi-Fi e inténtalo nuevamente.',0,`${method} ${path} · ${e instanceof Error?e.message:String(e)} · ${API_URL}`);}
  // Un proxy o servidor caído puede responder HTML: nunca mostrar un error de lectura JSON al usuario.
  let data:any=null;try{data=await response.json();}catch{}
@@ -48,19 +55,21 @@ export async function signOut(){await api('/auth/logout','POST',{});await forget
 export async function documentAction(path:string,width:58|80,action:'share'|'print'|'open'){
  const url=`${API_URL}/api${path}/pdf?width=${width}`;const name=`comprobante-${path.split('/').pop()?.slice(0,8)}-${width}mm.pdf`;
  if(Platform.OS==='web'){
-  const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new ApiError('No se pudo descargar el comprobante. Inténtalo nuevamente.',response.status,`HTTP ${response.status} · GET ${path}/pdf`);
+  const response=await fetch(url,{cache:'no-store',headers:{Authorization:`Bearer ${token}`}});if(!response.ok)throw new ApiError('No se pudo descargar el comprobante. Inténtalo nuevamente.',response.status,`HTTP ${response.status} · GET ${path}/pdf`);
   const blob=await response.blob();
   if(action==='share'){const file=new File([blob],name,{type:'application/pdf'});if(navigator.canShare?.({files:[file]})){try{await navigator.share({files:[file],title:'Comprobante'});}catch(e){if((e as Error).name!=='AbortError')throw e;}return;}}
-  const uri=URL.createObjectURL(blob);
+  const uri=URL.createObjectURL(blob);documentUrls.add(uri);
   // Imprimir abre el visor PDF del navegador (botón imprimir al 100 %); abrir/compartir sin soporte descarga el archivo.
   // Si el navegador bloquea la ventana emergente, se descarga el archivo para imprimirlo desde el visor.
   if(action!=='print'||!window.open(uri,'_blank')){const a=document.createElement('a');a.href=uri;a.download=name;a.click();}
-  setTimeout(()=>URL.revokeObjectURL(uri),60000);return;
+  setTimeout(()=>{URL.revokeObjectURL(uri);documentUrls.delete(uri);},60000);return;
  }
  const result=await FileSystem.downloadAsync(url,FileSystem.cacheDirectory+name,{headers:{Authorization:`Bearer ${token}`}});
+ try{
  if(result.status!==200)throw new ApiError('No se pudo descargar el comprobante. Revisa la conexión e inténtalo nuevamente.',result.status,`HTTP ${result.status} · GET ${path}/pdf`);
  if(action==='print')await Print.printAsync({uri:result.uri});
  else{if(!await Sharing.isAvailableAsync())throw new Error('Este celular no permite compartir archivos.');await Sharing.shareAsync(result.uri,{mimeType:'application/pdf',UTI:'com.adobe.pdf',dialogTitle:action==='open'?'Abrir o guardar comprobante':'Compartir comprobante'});}
+ }finally{await FileSystem.deleteAsync(result.uri,{idempotent:true});}
 }
 export async function readPending(userId:string):Promise<Record<string,unknown>|null>{
  const key=`pos-pending-${userId}`;const value=Platform.OS==='web'?localStorage.getItem(key):await SecureStore.getItemAsync(key);return value?JSON.parse(value):null;

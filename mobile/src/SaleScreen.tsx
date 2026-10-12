@@ -2,24 +2,26 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Platform, Pressable, Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import * as Crypto from 'expo-crypto';
+import {canDisplaySale} from './businessDay';
 import {api, ApiError, readPending, savePending} from './api';
 import {nextProvisional, printLocal, saleTitle, type QueuedSale} from './offline';
 import {Badge, Banner, Button, Card, Choice, Empty, Field, FooterBar, IconButton, Loading, Page, SearchBar, Segmented, Sheet, Stepper, colors, cop, fitSize, lineSubtotal, moneyToCents, normalizeSearch, parseQuantity, quantityForApi, quantityLabel, quantityText, receiptNumber, styles, unitLabel, useBack} from './ui';
-import type {CashSession, Product, Customer, Platform as PayPlatform, CartLine, Sale, Settings, User} from './types';
+import type {CashSession, Product, Customer, Platform as PayPlatform, CartLine, Sale, SaleAcknowledgement, Settings, User} from './types';
 import type {Run} from '../App';
-type Props = {user: User; settings: Settings; enqueue: (entry: QueuedSale) => Promise<void>; dequeue: (key: string) => Promise<void>; onLocalCustomer: (c: Customer) => void; active: boolean; session?: CashSession; products: Product[]; customers: Customer[]; platforms: PayPlatform[]; paperWidth: 58 | 80; refresh: () => Promise<void>; run: Run; busy: boolean; onViewSale: (sale: Sale) => void; onOpenCash: () => void};
+type Props = {businessDate: string; user: User; settings: Settings; enqueue: (entry: QueuedSale) => Promise<void>; dequeue: (key: string) => Promise<void>; onLocalCustomer: (c: Customer) => void; active: boolean; session?: CashSession; products: Product[]; customers: Customer[]; platforms: PayPlatform[]; paperWidth: 58 | 80; refresh: () => Promise<void>; run: Run; busy: boolean; onViewSale: (sale: Sale) => void; onOpenCash: () => void};
 type SaleView = 'catalog' | 'cart' | 'pay';
 const KG_PRESETS = ['0,25', '0,5', '1', '1,5', '2', '3'];
 const UNIT_PRESETS = ['1', '2', '3', '6', '12', '24'];
 const PAGE = 30;
 
-export function SaleScreen({user, settings, enqueue, dequeue, onLocalCustomer, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
+export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLocalCustomer, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
   const [cart, setCart] = useState<CartLine[]>([]), [query, setQuery] = useState(''), [limit, setLimit] = useState(PAGE), [view, setView] = useState<SaleView>('catalog');
   const [customer, setCustomer] = useState(''), [pickCustomer, setPickCustomer] = useState(false), [customerSearch, setCustomerSearch] = useState(''), [newCustomer, setNewCustomer] = useState(false), [name, setName] = useState(''), [city, setCity] = useState('');
   const [editing, setEditing] = useState<Product | null>(null), [qtyText, setQtyText] = useState('');
   const [pay, setPay] = useState(''), [received, setReceived] = useState('');
   const userId = user.id;
   const [ready, setReady] = useState(false), [done, setDone] = useState<{sale: Sale; change: number | null; offline: boolean} | null>(null);
+  useEffect(() => { setDone(current => current && !canDisplaySale(user, current.sale, businessDate, settings.time_zone) ? null : current); }, [businessDate]);
   // Bloqueo síncrono: un doble toque no alcanza a crear dos ventas aunque React aún no haya deshabilitado el botón.
   const confirming = useRef(false);
   // Una confirmación pendiente de la versión anterior pasa a la cola de ruta (misma referencia: no se duplica).
@@ -103,7 +105,7 @@ export function SaleScreen({user, settings, enqueue, dequeue, onLocalCustomer, a
       await enqueue({key, provisional, created_at: soldAt, body, sale: preview});
       const change = method === 'cash' && receivedCents !== null ? receivedCents - total : null;
       let sale: Sale;
-      try { sale = await api<Sale>('/sales', 'POST', body); }
+      try { const result = await api<Sale | SaleAcknowledgement>('/sales', 'POST', body); if ('history_restricted' in result) { await dequeue(key); reset(); await refresh().catch(() => undefined); return; } sale = result; }
       catch (e) {
         // Rechazo con señal (precio cambiado, stock, caja): no se registró; se quita de la cola y se informa.
         if (e instanceof ApiError && e.status > 0 && e.status < 500) { await dequeue(key); void refresh().catch(() => undefined); throw e; }
@@ -118,7 +120,7 @@ export function SaleScreen({user, settings, enqueue, dequeue, onLocalCustomer, a
   if (!ready) return <Page><Loading text="Recuperando ventas pendientes…"/></Page>;
 
   // ── Venta registrada
-  if (done) {
+  if (done && canDisplaySale(user, done.sale, businessDate, settings.time_zone)) {
     const {sale, change} = done, p = sale.payments?.[0];
     return <Page testID="sale-done">
       <View style={{alignItems: 'center', gap: 8, paddingTop: 12}}>
@@ -145,7 +147,7 @@ export function SaleScreen({user, settings, enqueue, dequeue, onLocalCustomer, a
     </Page>;
   }
 
-  if (!session) return <Page><Empty icon="lock" title="Tu caja está cerrada" text="Para registrar ventas, primero abre tu caja con el dinero base. Las ventas anteriores siguen en el historial." action="Abrir mi caja" onAction={onOpenCash}/></Page>;
+  if (!session) return <Page><Empty icon="lock" title="Tu caja está cerrada" text="Para registrar ventas, primero abre tu caja con el dinero base. Consulta las ventas permitidas en el historial." action="Abrir mi caja" onAction={onOpenCash}/></Page>;
 
   const footer = view === 'pay'
     ? <FooterBar>

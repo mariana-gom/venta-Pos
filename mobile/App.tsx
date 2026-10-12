@@ -3,7 +3,7 @@ import {StatusBar} from 'expo-status-bar';
 import {Feather} from '@expo/vector-icons';
 import {Text,View,Pressable,StyleSheet,ActivityIndicator,Animated,Platform,useWindowDimensions} from 'react-native';
 import {SafeAreaProvider,SafeAreaView} from 'react-native-safe-area-context';
-import {api,ApiError,forgetSession,onConnectivity,restoreSession,signIn,signOut} from './src/api';
+import {api,ApiError,clearDocumentCache,forgetSession,onConnectivity,restoreSession,signIn,signOut} from './src/api';
 import {loadCache,loadQueue,loadSynced,saveCache,saveQueue,saveSynced,type QueuedSale} from './src/offline';
 import {Banner,Logo,ProgressBar,colors,initials,styles,useHardwareBack} from './src/ui';
 import type {User,Product,Customer,Platform as PayPlatform,Settings,CashSession,Sale,Closure,Tab} from './src/types';
@@ -13,6 +13,7 @@ import {SaleScreen} from './src/SaleScreen';
 import {CatalogScreen} from './src/CatalogScreen';
 import {CashScreen} from './src/CashScreen';
 import {HistoryScreen} from './src/HistoryScreen';
+import {useBusinessDay, canDisplaySale} from './src/businessDay';
 import {SettingsScreen} from './src/SettingsScreen';
 // Cinco pestañas caben cómodas desde 320 px; Vender queda al centro, al alcance del pulgar. Perfil se abre desde el avatar.
 const tabs=[{id:'home',name:'Inicio',icon:'home'},{id:'cash',name:'Caja',icon:'inbox'},{id:'sale',name:'Vender',icon:'shopping-cart'},{id:'catalog',name:'Catálogo',icon:'package'},{id:'history',name:'Historial',icon:'clock'}] as const;
@@ -22,6 +23,8 @@ function Main(){
  const {width}=useWindowDimensions();
  const [user,setUser]=useState<User|null>(null),[boot,setBoot]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState<{text:string;detail?:string}|null>(null),[tab,setTab]=useState<Tab>('home');
  const [products,setProducts]=useState<Product[]>([]),[customers,setCustomers]=useState<Customer[]>([]),[platforms,setPlatforms]=useState<PayPlatform[]>([]),[sessions,setSessions]=useState<CashSession[]>([]),[settings,setSettings]=useState<Settings>({business_name:"DISTRIBUIDORA & SALSAMENTARIA DANNY'S",paper_width:80}),[sale,setSale]=useState<Sale|null>(null),[closure,setClosure]=useState<Closure|null>(null),[sessionFilter,setSessionFilter]=useState(''),[historyVersion,setHistoryVersion]=useState(0),[catalogTab,setCatalogTab]=useState<'products'|'customers'>('products'),[catalogVersion,setCatalogVersion]=useState(0),[toast,setToast]=useState('');
+ const businessClock=useBusinessDay(settings.time_zone,!!user);
+ const previousDay=useRef(businessClock.date);
  const [online,setOnline]=useState(true),[queue,setQueue]=useState<QueuedSale[]>([]),[localCustomers,setLocalCustomers]=useState<Customer[]>([]);
  const toastTimer=useRef<ReturnType<typeof setTimeout>>(undefined),syncing=useRef(false),loaded=useRef(false);
  const notify=useCallback((text:string)=>{setToast(text);clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(''),2600);},[]);
@@ -32,13 +35,21 @@ function Main(){
  const refresh=useCallback(async()=>{
   const results=await Promise.all([api<Product[]>('/products'),api<Customer[]>('/customers'),api<PayPlatform[]>('/platforms'),api<CashSession[]>('/cash-sessions'),api<Settings>('/settings')]);setProducts(results[0]);setCustomers(results[1]);setPlatforms(results[2]);setSessions(results[3]);setSettings(results[4]);loaded.current=true;
  },[]);
+ // Al cambiar de día se purga la información consultable; la cola de escritura sigue intacta para sincronizar.
+ useEffect(()=>{
+  if(previousDay.current===businessClock.date)return;previousDay.current=businessClock.date;
+  if(user?.role==='seller'){setSale(null);setClosure(null);setHistoryVersion(n=>n+1);}
+  if(user)void refresh().catch(()=>undefined);
+ },[businessClock.date,user,refresh]);
+ useEffect(()=>{if(user?.role==='seller')void clearDocumentCache().catch(()=>undefined);},[businessClock.date,user]);
  // Sin señal se trabaja con la última copia guardada en el celular.
  const applyCache=useCallback(async(userId:string)=>{const c=await loadCache();if(!c||c.user.id!==userId)return false;setProducts(c.products);setCustomers(c.customers);setPlatforms(c.platforms);setSessions(c.sessions);setSettings(c.settings);loaded.current=true;return true;},[]);
  const refreshOrCache=useCallback(async(userId:string)=>{try{await refresh();}catch(e){if(!(e instanceof ApiError&&e.status===0&&await applyCache(userId)))throw e;}},[refresh,applyCache]);
  useEffect(()=>onConnectivity(setOnline),[]);
  useEffect(()=>{void restoreSession().then(async u=>{if(u){setUser(u);await refreshOrCache(u.id);}}).catch(e=>setError({text:e.message,detail:e instanceof ApiError?e.detail:undefined})).finally(()=>setBoot(false));},[]);
+ const visibleSessions=user?.role==='seller'?sessions.map(s=>s.sales_date===businessClock.date?s:{...s,sales_date:businessClock.date,cash_cents:0,electronic_cents:0,total_cents:0,sale_count:0,platforms:[]}):sessions;
  // Copia local actualizada cada vez que cambian los datos (para abrir y vender sin señal).
- useEffect(()=>{if(user&&loaded.current)void saveCache({user,products,customers,platforms,sessions,settings,saved_at:new Date().toISOString()});},[user,products,customers,platforms,sessions,settings]);
+ useEffect(()=>{if(user&&loaded.current)void saveCache({user,products,customers,platforms,sessions:visibleSessions,settings,saved_at:new Date().toISOString()});},[user,products,customers,platforms,sessions,settings,businessClock.date]);
  useEffect(()=>{if(!user)return;void loadQueue(user.id).then(setQueue);void loadCache().then(c=>setLocalCustomers((c as {local_customers?:Customer[]}|null)?.local_customers||[]));},[user]);
  /** Sube en orden las ventas guardadas sin señal. Idempotente: un reintento nunca duplica una venta. */
  const sync=useCallback(async(manual=false)=>{
@@ -73,7 +84,7 @@ function Main(){
  const allCustomers=[...customers,...localCustomers.filter(c=>!customers.some(x=>x.id===c.id))];
  // Botón atrás de Android: primero cierra hojas/subpantallas, luego vuelve a Inicio y solo entonces sale.
  useHardwareBack(()=>{if(user&&tab!=='home'){setTab('home');return true;}return false;});
- const own=sessions.find(s=>s.opened_by===user?.id&&s.state==='open');
+ const own=visibleSessions.find(s=>s.opened_by===user?.id&&s.state==='open');
  function go(target:Tab){setError(null);setTab(target);}
  function history(selectedSale:Sale|null=null,selectedClosure:Closure|null=null,filter=''){setSale(selectedSale);setClosure(selectedClosure);setSessionFilter(filter);setHistoryVersion(n=>n+1);go('history');}
  function catalog(sub:'products'|'customers'){setCatalogTab(sub);setCatalogVersion(n=>n+1);go('catalog');}
@@ -82,7 +93,8 @@ function Main(){
  const errorBanner=error&&<View style={local.bannerWrap}><Banner text={error.text} detail={error.detail} onClose={()=>setError(null)}/></View>;
  if(!user)return <SafeAreaView style={local.root} edges={['top','left','right','bottom']}><StatusBar style="dark"/><ProgressBar active={busy}/>{errorBanner}
   <LoginScreen busy={busy} onSubmit={(username,password)=>run(async()=>{const u=await signIn(username,password);setUser(u);setTab('home');await refresh();})}/></SafeAreaView>;
- const queuedTotal=queue.reduce((n,q)=>n+q.sale.total_cents,0);
+ const visibleQueue=queue.filter(q=>canDisplaySale(user,q.sale,businessClock.date,settings.time_zone));
+ const queuedTotal=visibleQueue.reduce((n,q)=>n+q.sale.total_cents,0);
  const brand=/DANNY/i.test(settings.business_name)?"DANNY'S":settings.business_name;
  return <SafeAreaView style={local.root} edges={['top','left','right','bottom']}><StatusBar style="dark"/>
   <View style={local.top}>
@@ -103,12 +115,12 @@ function Main(){
   <View style={{flex:1}}>
    <ProgressBar active={busy}/>
    {errorBanner}
-   {tab==='home'&&<HomeScreen user={user} sessions={sessions} busy={busy} run={run} refresh={refresh} go={go} onHistory={()=>history()} onCatalog={catalog} online={online} queued={queue.length} queuedTotal={queuedTotal} onSync={()=>run(()=>sync(true))}/>}
+   {tab==='home'&&<HomeScreen user={user} sessions={visibleSessions} busy={busy} run={run} refresh={refresh} go={go} onHistory={()=>history()} onCatalog={catalog} online={online} queued={visibleQueue.length} queuedTotal={queuedTotal} onSync={()=>run(()=>sync(true))}/>}
    {/* Vender permanece montada: el carrito no se pierde al cambiar de pestaña. */}
-   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen user={user} settings={settings} active={tab==='sale'} session={own} products={products} customers={allCustomers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')} enqueue={enqueue} dequeue={dequeue} onLocalCustomer={addLocalCustomer}/></View>
-   {tab==='cash'&&<CashScreen queued={queue.length} sessions={sessions} user={user} refresh={refresh} run={run} busy={busy} onClosure={c=>history(null,c)} onHistory={id=>history(null,null,id)} onSell={()=>go('sale')}/>}
+   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen businessDate={businessClock.date} user={user} settings={settings} active={tab==='sale'} session={own} products={products} customers={allCustomers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')} enqueue={enqueue} dequeue={dequeue} onLocalCustomer={addLocalCustomer}/></View>
+   {tab==='cash'&&<CashScreen key={user.role==='seller'?businessClock.date:'admin'} queued={queue.length} sessions={visibleSessions} user={user} refresh={refresh} run={run} busy={busy} onClosure={c=>history(null,c)} onHistory={id=>history(null,null,id)} onSell={()=>go('sale')}/>}
    {tab==='catalog'&&<CatalogScreen key={catalogVersion} initialTab={catalogTab} products={products} customers={allCustomers} user={user} run={run} refresh={refresh} busy={busy}/>}
-   {tab==='history'&&<HistoryScreen key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={allCustomers} sessions={sessions} queue={queue}/>}
+   {tab==='history'&&<HistoryScreen businessDate={businessClock.date} key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={allCustomers} sessions={visibleSessions} queue={queue}/>}
    {tab==='settings'&&<SettingsScreen queued={queue.length} user={user} settings={settings} platforms={platforms} run={run} refresh={refresh} busy={busy} logout={logout}/>}
    {!!toast&&<Toast text={toast}/>}
   </View>
