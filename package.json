@@ -13,6 +13,7 @@
     "check": "npm run check -w mobile",
     "setup-admin": "npm run setup-admin -w server",
     "backup": "npm run backup -w server",
+    "test:e2e:operations": "node scripts/e2e-operations.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "dev": "node scripts/dev.mjs"
   },

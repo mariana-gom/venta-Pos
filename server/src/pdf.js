@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { fileURLToPath } from 'node:url';
 import { cop,difference } from './money.js';
+import {dayStart,nextDay,businessTimeZone} from './sales-access.js';
 const mm=72/25.4;
 // Versión en escala de grises del logo oficial, preparada para impresoras térmicas monocromáticas
 // (scripts/logo-print.mjs). Proporción original 469×400.
@@ -77,6 +78,8 @@ export async function receiptPdf(sale,width=58) {
   {text:'COMPROBANTE DE VENTA',bold:true,align:'center',size:L.small+0.5},{text:`Venta ${receiptNumber(sale.number)}`,bold:true,size:L.total,align:'center'},{rule:'solid'},
   {pair:['Fecha',dateOf(sale.created_at)],boldRight:true},{pair:['Hora',timeOf(sale.created_at)],boldRight:true},{pair:['Vendedor',s.seller_name],boldRight:true}];
  if(sale.session_number)lines.push({pair:['Caja',`#${sale.session_number}`],boldRight:true});
+ if(sale.cancellation)lines.push({text:'ANULADA',bold:true,align:'center',size:L.total},{text:`${sale.cancellation.actor_name} · ${stamp(sale.cancellation.created_at)}`},{text:'Motivo: '+sale.cancellation.reason});
+ if(s.customer_identification)lines.push({pair:['Identificación',s.customer_identification]});
  lines.push({space:3},{pair:['Cliente',s.customer_name],boldRight:true},{pair:['Ciudad',s.customer_city],boldRight:true},{rule:'dash'},{pair:['PRODUCTO','VALOR'],bold:true,size:L.small},{rule:'dash'});
  for(const item of sale.items){
   const unit=item.unit==='kg'?'kg':'und';
@@ -86,8 +89,9 @@ export async function receiptPdf(sale,width=58) {
  lines.push({rule:'double'},{pair:['TOTAL',cop(sale.total_cents)],bold:true,size:L.total},{rule:'double'},
   {pair:['Productos',String(count)]});
  for(const p of sale.payments){
-  lines.push({pair:['Método de pago',p.method==='cash'?'EFECTIVO':(p.platform_name||'ELECTRÓNICO').toUpperCase()],boldRight:true});
-  if(p.method!=='cash')lines.push({pair:['','Pago electrónico'],size:L.small});
+  lines.push({pair:['Método de pago',p.method==='cash'?'EFECTIVO':p.method==='credit'?'CRÉDITO':(p.platform_name||'ELECTRÓNICO').toUpperCase()],boldRight:true});
+  if(p.method==='electronic'&&p.reference)lines.push({pair:['Número de referencia',p.reference],boldRight:true});
+  if(p.method==='credit')lines.push({text:'Valor pendiente de pago. No recibido en caja.',size:L.small});
  }
  lines.push({rule:'dash'},{space:2},{text:`¡Gracias por comprar en ${shortBrand(s.business_name)}!`,bold:true,align:'center'},{space:3},
   {text:'Comprobante de venta.',align:'center',size:L.small},{text:'No es factura electrónica.',align:'center',size:L.small});
@@ -98,13 +102,31 @@ export async function closurePdf(closure,width=58) {
  const lines=[...businessHeader(s,L),{space:4},{rule:'solid'},{text:'CIERRE DE CAJA',bold:true,align:'center',size:L.small+0.5},{text:`Cierre ${receiptNumber(closure.number)}`,bold:true,size:L.total,align:'center'},{rule:'solid'}];
  if(closure.session_number)lines.push({pair:['Caja',`#${closure.session_number}`],boldRight:true});
  lines.push({pair:['Apertura',stamp(s.opened_at)],boldRight:true},{pair:['Cierre',stamp(s.closed_at)],boldRight:true},{pair:['Abrió',s.opener_name],boldRight:true},{pair:['Cerró',s.admin_name],boldRight:true},{pair:['Ventas',String(s.sale_count)],boldRight:true},
-  {rule:'dash'},{pair:['Saldo inicial',cop(s.opening_cents)]},{pair:['Ventas efectivo',cop(s.cash_cents)]},{pair:['Ventas electrónicas',cop(s.electronic_cents)]},
+  {rule:'dash'},{pair:['Saldo inicial',cop(s.opening_cents)]},{pair:['Ventas efectivo',cop(s.sales_cash_cents??s.cash_cents)]},{pair:['Ventas electrónicas',cop(s.sales_electronic_cents??s.electronic_cents)]},
   {rule:'double'},{pair:['TOTAL VENTAS',cop(s.total_cents)],bold:true,size:L.title},{rule:'double'},
   {text:'EFECTIVO',bold:true},{pair:['Esperado (con saldo)',cop(s.expected_cash_cents)]},{pair:['Contado',cop(s.declared_cash_cents)]},{pair:['Diferencia',signed(s.cash_difference_cents)],bold:true},{text:difference(s.cash_difference_cents),size:L.small},
   {rule:'dash'},{text:'ELECTRÓNICO',bold:true},{pair:['Registrado',cop(s.electronic_cents)]},{pair:['Verificado',cop(s.declared_electronic_cents)]},{pair:['Diferencia',signed(s.electronic_difference_cents)],bold:true},{text:difference(s.electronic_difference_cents),size:L.small},
   {rule:'dash'},{pair:['DIFERENCIA TOTAL',signed(s.total_difference_cents)],bold:true},{text:difference(s.total_difference_cents),size:L.small});
  if(s.platforms.length)lines.push({rule:'dash'},{text:'POR PLATAFORMA',bold:true},...s.platforms.map(p=>({pair:[p.platform_name,cop(p.amount)]})));
+ if(s.credit_cents!==undefined)lines.push({rule:'dash'},{text:'CRÉDITO Y COBROS DE CARTERA',bold:true},{pair:['Crédito registrado',cop(s.credit_cents)]},{pair:['Crédito reportado',cop(s.declared_credit_cents||0)]},{pair:['Diferencia crédito',signed(s.credit_difference_cents||0)]},{pair:['Cobros cartera efectivo',cop(s.collection_cash_cents||0)]},{pair:['Cobros cartera electrónico',cop(s.collection_electronic_cents||0)]},{pair:['Devoluciones efectivo',cop(s.refund_cash_cents||0)]},{pair:['Devoluciones electrónico',cop(s.refund_electronic_cents||0)]});
  if(s.notes)lines.push({rule:'dash'},{text:'Observaciones',bold:true},{text:s.notes});
  lines.push({rule:'dash'},{text:'Valores originales del cierre. Las diferencias se concilian por separado.',size:L.small,align:'center'});
  return build(lines,width,`Cierre ${receiptNumber(closure.number)}`);
+}
+
+export async function statementPdf(account,settings,period={}) {
+ const zone=businessTimeZone(),from=period.from?dayStart(period.from,zone):null,to=period.to?dayStart(nextDay(period.to),zone):null;
+ const initial=account.events.filter(e=>from&&e.at<from).reduce((n,e)=>n+e.charge_cents-e.payment_cents,0);
+ const events=account.events.filter(e=>(!from||e.at>=from)&&(!to||e.at<to));
+ const final=initial+events.reduce((n,e)=>n+e.charge_cents-e.payment_cents,0);
+ const doc=new PDFDocument({size:'A4',margin:42,info:{Title:'Extracto de cartera',Author:settings.business_name}}),chunks=[];
+ const result=new Promise((resolve,reject)=>{doc.on('data',chunk=>chunks.push(chunk));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
+ const header=()=>{doc.font('Helvetica-Bold').fontSize(15).text(clean(settings.business_name));doc.font('Helvetica').fontSize(10).text(clean([settings.business_nit&&'NIT '+settings.business_nit,settings.business_address,settings.business_city,settings.business_phone].filter(Boolean).join(' · '))).moveDown();};
+ header();doc.font('Helvetica-Bold').fontSize(18).text('Créditos y cartera').moveDown(.5);doc.font('Helvetica').fontSize(11).text(clean(`Cliente: ${account.customer.name}`)).text(clean(`Identificación: ${account.customer.identification||'No registrada'}`)).text(`Periodo: ${period.from||'Inicio'} - ${period.to||'Actual'}`).text(clean(`Saldo inicial: ${cop(initial)}`)).moveDown();
+ const columns=[42,160,207,288,374],widths=[110,42,75,80,179];
+ const row=(values,bold=false)=>{const start=doc.y;doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(9);const height=Math.max(...values.map((v,i)=>doc.heightOfString(clean(v),{width:widths[i]})))+8;if(start+height>doc.page.height-55){doc.addPage();header();return row(values,bold);}values.forEach((v,i)=>doc.text(clean(v),columns[i],start,{width:widths[i],align:i>=2?'right':'left'}));doc.y=start+height;};
+ row(['Fecha / movimiento','Factura','Cargo','Abono','Saldo'],true);
+ let balance=initial;
+ for(const event of events){balance+=event.charge_cents-event.payment_cents;const date=new Intl.DateTimeFormat('es-CO',{dateStyle:'short',timeStyle:'short',timeZone:zone}).format(new Date(event.at));row([`${date}\n${event.description}`,receiptNumber(event.invoice),cop(event.charge_cents),cop(event.payment_cents),cop(balance)]);}
+ doc.moveDown();doc.x=42;doc.font('Helvetica-Bold').fontSize(12).text(clean(`Saldo final: ${cop(final)}`));doc.font('Helvetica').fontSize(9).moveDown().text('Los abonos conservan el valor original de cada factura. Extracto informativo; no es factura electrónica.');doc.end();return result;
 }

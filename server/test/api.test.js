@@ -20,12 +20,15 @@ test('Flujo integral: permisos, stock, conciliación, persistencia e históricos
  try{
   await request('POST','/products',{name:'Denegado',price:'1',unit:'unit'},'seller',403);
   const unit=await request('POST','/products',{name:'Producto unidad',price:'5000',unit:'unit',stock:'1000'},'admin');
+  const route=await request('POST','/routes',{name:'Ruta prueba',request_key:randomUUID()},'admin',201);
+  await request('PUT','/users/'+u.id+'/route',{route_id:route.id,request_key:randomUUID()});
+  await request('POST','/inventory',{product_id:unit.id,route_id:route.id,quantity:'1000',kind:'allocate',reason:'Distribución inicial',request_key:randomUUID()});
   const cheese=await request('POST','/products',{name:'Queso campesino',price:'24000',unit:'kg'},'admin');
   const customer=await request('POST','/customers',{name:'Ana',city:'Bogotá'},'seller',201);
   const duplicate=await request('POST','/customers',{name:'Ana',city:'Bogotá'},'seller',201);assert.equal(duplicate.id,customer.id);
   const session=await request('POST','/cash-sessions',{opening:'0'},'seller',201);
   await request('POST','/cash-sessions',{opening:'0'},'seller',409);
-  const sell=(items,method='cash',platform_id=null,key=randomUUID())=>request('POST','/sales',{session_id:session.id,customer_id:customer.id,items,method,platform_id,request_key:key},'seller',201);
+  const sell=(items,method='cash',platform_id=null,key=randomUUID())=>request('POST','/sales',{session_id:session.id,customer_id:customer.id,items,method,platform_id,reference:method==='electronic'?'000-PRUEBA':undefined,request_key:key},'seller',201);
   const firstKey=randomUUID();const first=await sell([{product_id:unit.id,quantity:'3'}],'cash',null,firstKey);assert.equal(first.total_cents,1500000);
   assert.equal((await sell([{product_id:unit.id,quantity:'3'}],'cash',null,firstKey)).id,first.id);
   await request('POST','/sales',{session_id:session.id,customer_id:customer.id,items:[{product_id:unit.id,quantity:'4'}],method:'cash',request_key:firstKey},'seller',409);

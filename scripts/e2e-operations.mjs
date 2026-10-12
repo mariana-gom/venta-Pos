@@ -1,0 +1,52 @@
+import express from 'express';
+import {chromium,expect} from '@playwright/test';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {mkdtempSync,mkdirSync,rmSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {join} from 'node:path';
+import ExcelJS from 'exceljs';
+import {openDatabase} from '../server/src/db.js';
+import {createApp} from '../server/src/app.js';
+import {createUser,login} from '../server/src/auth.js';
+const root=fileURLToPath(new URL('../',import.meta.url));mkdirSync(join(root,'tmp'),{recursive:true});const directory=mkdtempSync(join(root,'tmp','e2e-ops-'));
+const db=openDatabase(join(directory,'test.sqlite')),password=randomBytes(24).toString('hex');
+const admin=await createUser(db,{name:'Admin prueba',username:'admin-ops',password,role:'admin'}),seller=await createUser(db,{name:'Vendedor prueba',username:'seller-ops',password,role:'seller'});
+const tokens={admin:(await login(db,admin.username,password)).token,seller:(await login(db,seller.username,password)).token};
+const app=express(),server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const origin=`http://127.0.0.1:${server.address().port}`;process.env.CORS_ORIGINS=origin;app.use(express.static(join(directory,'web')));app.use(createApp(db));
+async function call(path,body,role='admin'){const r=await fetch(origin+'/api'+path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+tokens[role],'Content-Type':'application/json'},body:body&&JSON.stringify(body)});if(!r.ok)throw new Error(await r.text());return r.json();}
+let browser,page;const errors=[];const shots=join(root,'output','screenshots');mkdirSync(shots,{recursive:true});
+try{
+ const product=await call('/products',{name:'Producto prueba',price:'5000',unit:'unit',stock:'20',code:'0007',category:'Alimentos',brand:'Danny',wholesale_price:'4000'});
+ const customer=await call('/customers',{name:'Ana crédito',city:'Bogotá',identification:'001234'});
+ execFileSync('npm',['exec','-w','mobile','--','expo','export','--clear','--platform','web','--output-dir',join(directory,'web')],{cwd:root,env:{...process.env,EXPO_PUBLIC_API_URL:origin},stdio:'pipe'});
+ browser=await chromium.launch({headless:true});page=await browser.newPage({viewport:{width:390,height:844},acceptDownloads:true});page.on('pageerror',e=>errors.push(e.message));
+ const id=t=>page.getByTestId(t),button=name=>page.getByRole('button',{name,exact:true});
+ async function signIn(username){await page.getByLabel('Usuario',{exact:true}).fill(username);await page.getByLabel('Contraseña',{exact:true}).fill(password);await button('Entrar').click();await expect(id('profile-button')).toBeVisible();}
+ async function logout(){await id('profile-button').click();await button('Cerrar sesión').click();await button('Cerrar sesión').last().click();await expect(button('Entrar')).toBeVisible();}
+ await page.goto(origin);await signIn('admin-ops');await id('profile-button').click();await id('admin-routes').click();
+ await page.getByLabel('Nueva ruta').fill('Ruta Norte');await button('Crear ruta').click();await expect(page.getByLabel('Nueva ruta')).toHaveValue('');
+ await page.getByRole('button',{name:'Vendedor prueba',exact:true}).click();await page.getByRole('button',{name:'Ruta Norte',exact:true}).first().click();await button('Guardar asignación').click();
+ await page.getByRole('button',{name:'Producto prueba',exact:true}).click();await page.getByRole('button',{name:'Ruta Norte',exact:true}).last().click();await page.getByLabel('Cantidad',{exact:true}).fill('20');await page.getByLabel('Motivo',{exact:true}).fill('Distribución inicial');await button('Revisar movimiento').click();await button('Confirmar movimiento').click();await expect(page.getByLabel('Cantidad',{exact:true})).toHaveValue('');
+ await expect(button('Confirmar movimiento')).not.toBeVisible();await page.screenshot({path:join(shots,'operaciones-rutas.png'),fullPage:true});await logout();await signIn('seller-ops');
+ await id('tab-cash').click();await id('open-cash').click();await expect(id('own-session')).toBeVisible();
+ async function prepare(){await id('tab-sale').click();await id('customer-picker').click();await page.getByRole('button',{name:'Ana crédito, Bogotá'}).click();await id('add-Producto prueba').click();await id('checkout').click();}
+ await prepare();await page.getByRole('radio',{name:'Nequi'}).click();await expect(id('confirm-sale')).toBeDisabled();await id('electronic-reference').fill('000-ABC');await id('confirm-sale').dblclick();await expect(id('sale-done')).toBeVisible();await id('sale-view-receipt').click();await expect(id('receipt-preview')).toContainText('000-ABC');await page.screenshot({path:join(shots,'operaciones-referencia.png')});
+ await prepare();await page.getByRole('radio',{name:'Nequi'}).click();await id('electronic-reference').fill('no-corresponde');await page.getByRole('radio',{name:'Crédito'}).click();await expect(id('electronic-reference')).toHaveCount(0);await id('confirm-sale').dblclick();await expect(id('sale-done')).toContainText('Crédito');
+ const recorded=await call('/sales');if(recorded.count!==2)throw new Error('Doble clic duplicó la venta');const credit=recorded.sales.find(s=>s.method==='credit'),electronic=recorded.sales.find(s=>s.method==='electronic');
+ await logout();await signIn('admin-ops');await id('profile-button').click();await id('admin-accounts').click();await id('account-'+customer.id).click();
+ await id('register-collection').click();await id('collection-amount').fill('2000');const session=(await call('/cash-sessions')).find(s=>s.opened_by===seller.id);await page.getByRole('button',{name:'Caja #'+session.number+' · Vendedor prueba',exact:true}).click();await button('Revisar abono').click();await button('Confirmar abono').dblclick();await expect(page.getByText('Parcialmente pagada',{exact:true}).first()).toBeVisible();
+ await id('register-collection').click();await id('collection-amount').fill('3000');await page.getByRole('button',{name:'Nequi',exact:true}).click();await page.getByLabel('Número de referencia',{exact:true}).fill('000-ABONO');await page.getByRole('button',{name:'Caja #'+session.number+' · Vendedor prueba',exact:true}).click();await button('Revisar abono').click();await button('Confirmar abono').click();await expect(id('register-collection')).toBeDisabled();
+ await expect(button('Confirmar abono')).not.toBeVisible();const download=page.waitForEvent('download');await id('account-pdf').click();await(await download).saveAs(join(shots,'extracto-prueba.pdf'));await page.screenshot({path:join(shots,'operaciones-cartera.png'),fullPage:true});
+ const balance=await call('/accounts/'+customer.id);if(balance.balance_cents!==0||balance.collections.length!==2)throw new Error('Abono duplicado o saldo incorrecto');
+ await id('tab-cash').click();await button('Cerrar caja').click();await id('close-cash').fill('2000');await id('close-electronic').fill('8000');await id('close-credit').fill('4500');await id('review-close').click();await button('Confirmar cierre definitivo').click();await expect(id('closure-detail')).toBeVisible();await expect(id('closure-detail')).toContainText('Diferencia de crédito');
+ await id('tab-history').click();await id('sale-row-'+electronic.number).click();await id('cancel-sale').click();await page.getByLabel('Motivo de anulación').fill('Devolución después del cierre');await page.getByRole('button',{name:'Nequi',exact:true}).click();await page.getByLabel('Número de referencia de devolución').fill('000-DEV');await page.getByLabel('Motivo de devolución fuera de caja').fill('Transferencia administrativa');await button('Revisar anulación').click();await button('Confirmar anulación').click();await expect(page.getByText('Venta anulada',{exact:true})).toBeVisible();await expect(button('Confirmar anulación')).not.toBeVisible();
+ await id('view-receipt').click();await expect(id('receipt-preview')).toContainText('ANULADA');await page.screenshot({path:join(shots,'operaciones-anulada.png')});
+ // Importación real por el selector de archivos, con confirmación y resumen descargable.
+ const wb=new ExcelJS.Workbook(),sheet=wb.addWorksheet('Productos');sheet.getRow(5).values=['ID producto','Código','Descripción','Categoría','Marca','Precio de venta (COP)','Precio de venta mayoristas'];sheet.addRow(['','0007','No sobrescribir','Otra','Otra',{error:'#VALUE!'},4200]);sheet.addRow(['','0008','Nuevo importado','Alimentos','Marca',{error:'#VALUE!'},6000]);const excel=join(directory,'Productos_unificados.xlsx');await wb.xlsx.writeFile(excel);
+ await id('tab-catalog').click();const chooser=page.waitForEvent('filechooser');await id('import-excel').click();await(await chooser).setFiles(excel);await expect(page.getByText('Vista previa de importación',{exact:true})).toBeVisible();await button('Revisar y confirmar importación').click();await button('Confirmar importación').click();await expect(page.getByText(/Importación: 1 borradores, 1 precios actualizados/)).toBeVisible();
+ const summary=page.waitForEvent('download');await button('Descargar resumen').click();await(await summary).saveAs(join(shots,'importacion-prueba.csv'));
+ const after=(await call('/products')).find(p=>p.id===product.id);if(after.price_cents!==500000||after.wholesale_price_cents!==420000||after.stock_milli!==19000)throw new Error('Importación cambió datos indebidos');
+ await page.getByRole('button',{name:'Inactivos',exact:true}).click();await id('catalog-Nuevo importado').click();await expect(id('catalog-price')).toHaveValue('');await expect(page.getByLabel('Precio mayorista (opcional)')).toHaveValue('6000');await id('catalog-price').fill('7500');await page.getByRole('switch',{name:'Disponible para la venta'}).click();await id('catalog-save').click();
+ if(errors.length)throw new Error(errors.join('\n'));console.log('E2E operaciones: rutas/asignación/distribución, referencias, crédito, abonos parcial/completo sin duplicar, extracto, conciliación, anulación con caja cerrada, Excel con vista previa y activación de borradores verificados.');
+}catch(error){if(page)await page.screenshot({path:join(shots,'fallo-operaciones.png'),fullPage:true}).catch(()=>{});throw error;}finally{if(browser)await browser.close();await new Promise(r=>server.close(r));db.close();rmSync(directory,{recursive:true,force:true});}

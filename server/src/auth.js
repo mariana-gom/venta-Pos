@@ -14,12 +14,12 @@ async function verify(password, encoded) {
  const actual = await scrypt(password,salt,64,options);
  return timingSafeEqual(actual,Buffer.from(hash,'hex'));
 }
-export function publicUser(user) { return {id:user.id,name:user.name,username:user.username,role:user.role,active:user.active}; }
+export function publicUser(user) { return {id:user.id,name:user.name,username:user.username,role:user.role,active:user.active,route_id:user.route_id||null}; }
 export async function createUser(db, input, actor=null) {
  const passwordHash = await hashPassword(input.password);
  return transaction(db,()=>{
   const user = {id:id(),name:input.name,username:input.username,role:input.role,active:1};
-  db.prepare('INSERT INTO users VALUES (?,?,?,?,?,?,?)').run(user.id,user.username,user.name,passwordHash,user.role,1,now());
+  db.prepare('INSERT INTO users(id,username,name,password_hash,role,active,created_at) VALUES (?,?,?,?,?,?,?)').run(user.id,user.username,user.name,passwordHash,user.role,1,now());
   audit(db,actor,'user.create',user.id,{username:user.username,role:user.role});
   return user;
  });

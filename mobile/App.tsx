@@ -6,7 +6,7 @@ import {SafeAreaProvider,SafeAreaView} from 'react-native-safe-area-context';
 import {api,ApiError,clearDocumentCache,forgetSession,onConnectivity,restoreSession,signIn,signOut} from './src/api';
 import {loadCache,loadQueue,loadSynced,saveCache,saveQueue,saveSynced,type QueuedSale} from './src/offline';
 import {Banner,Logo,ProgressBar,colors,initials,styles,useHardwareBack} from './src/ui';
-import type {User,Product,Customer,Platform as PayPlatform,Settings,CashSession,Sale,Closure,Tab} from './src/types';
+import type {User,Product,SellableProduct,Customer,Platform as PayPlatform,Settings,CashSession,Sale,Closure,Tab} from './src/types';
 import {LoginScreen} from './src/LoginScreen';
 import {HomeScreen} from './src/HomeScreen';
 import {SaleScreen} from './src/SaleScreen';
@@ -14,6 +14,7 @@ import {CatalogScreen} from './src/CatalogScreen';
 import {CashScreen} from './src/CashScreen';
 import {HistoryScreen} from './src/HistoryScreen';
 import {useBusinessDay, canDisplaySale} from './src/businessDay';
+import {AdminScreen} from './src/AdminScreen';
 import {SettingsScreen} from './src/SettingsScreen';
 // Cinco pestañas caben cómodas desde 320 px; Vender queda al centro, al alcance del pulgar. Perfil se abre desde el avatar.
 const tabs=[{id:'home',name:'Inicio',icon:'home'},{id:'cash',name:'Caja',icon:'inbox'},{id:'sale',name:'Vender',icon:'shopping-cart'},{id:'catalog',name:'Catálogo',icon:'package'},{id:'history',name:'Historial',icon:'clock'}] as const;
@@ -47,7 +48,7 @@ function Main(){
  const refreshOrCache=useCallback(async(userId:string)=>{try{await refresh();}catch(e){if(!(e instanceof ApiError&&e.status===0&&await applyCache(userId)))throw e;}},[refresh,applyCache]);
  useEffect(()=>onConnectivity(setOnline),[]);
  useEffect(()=>{void restoreSession().then(async u=>{if(u){setUser(u);await refreshOrCache(u.id);}}).catch(e=>setError({text:e.message,detail:e instanceof ApiError?e.detail:undefined})).finally(()=>setBoot(false));},[]);
- const visibleSessions=user?.role==='seller'?sessions.map(s=>s.sales_date===businessClock.date?s:{...s,sales_date:businessClock.date,cash_cents:0,electronic_cents:0,total_cents:0,sale_count:0,platforms:[]}):sessions;
+ const visibleSessions=user?.role==='seller'?sessions.map(s=>s.sales_date===businessClock.date?s:{...s,sales_date:businessClock.date,cash_cents:0,electronic_cents:0,total_cents:0,sale_count:0,credit_cents:0,sales_cash_cents:0,sales_electronic_cents:0,collection_cash_cents:0,collection_electronic_cents:0,refund_cash_cents:0,refund_electronic_cents:0,platforms:[]}):sessions;
  // Copia local actualizada cada vez que cambian los datos (para abrir y vender sin señal).
  useEffect(()=>{if(user&&loaded.current)void saveCache({user,products,customers,platforms,sessions:visibleSessions,settings,saved_at:new Date().toISOString()});},[user,products,customers,platforms,sessions,settings,businessClock.date]);
  useEffect(()=>{if(!user)return;void loadQueue(user.id).then(setQueue);void loadCache().then(c=>setLocalCustomers((c as {local_customers?:Customer[]}|null)?.local_customers||[]));},[user]);
@@ -117,11 +118,12 @@ function Main(){
    {errorBanner}
    {tab==='home'&&<HomeScreen user={user} sessions={visibleSessions} busy={busy} run={run} refresh={refresh} go={go} onHistory={()=>history()} onCatalog={catalog} online={online} queued={visibleQueue.length} queuedTotal={queuedTotal} onSync={()=>run(()=>sync(true))}/>}
    {/* Vender permanece montada: el carrito no se pierde al cambiar de pestaña. */}
-   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen businessDate={businessClock.date} user={user} settings={settings} active={tab==='sale'} session={own} products={products} customers={allCustomers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')} enqueue={enqueue} dequeue={dequeue} onLocalCustomer={addLocalCustomer}/></View>
+   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen businessDate={businessClock.date} user={user} settings={settings} active={tab==='sale'} session={own} products={products.filter((p):p is SellableProduct=>!!p.active&&p.price_cents!==null&&p.unit!==null)} customers={allCustomers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')} enqueue={enqueue} dequeue={dequeue} onLocalCustomer={addLocalCustomer}/></View>
    {tab==='cash'&&<CashScreen key={user.role==='seller'?businessClock.date:'admin'} queued={queue.length} sessions={visibleSessions} user={user} refresh={refresh} run={run} busy={busy} onClosure={c=>history(null,c)} onHistory={id=>history(null,null,id)} onSell={()=>go('sale')}/>}
    {tab==='catalog'&&<CatalogScreen key={catalogVersion} initialTab={catalogTab} products={products} customers={allCustomers} user={user} run={run} refresh={refresh} busy={busy}/>}
-   {tab==='history'&&<HistoryScreen businessDate={businessClock.date} key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={allCustomers} sessions={visibleSessions} queue={queue}/>}
-   {tab==='settings'&&<SettingsScreen queued={queue.length} user={user} settings={settings} platforms={platforms} run={run} refresh={refresh} busy={busy} logout={logout}/>}
+   {tab==='history'&&<HistoryScreen platforms={platforms} refresh={refresh} businessDate={businessClock.date} key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={allCustomers} sessions={visibleSessions} queue={queue}/>}
+   {(tab==='accounts'||tab==='routes')&&user.role==='admin'&&<AdminScreen section={tab} user={user} settings={settings} products={products} platforms={platforms} sessions={sessions} run={run} busy={busy} refresh={refresh} back={()=>go('settings')}/>}
+   {tab==='settings'&&<SettingsScreen onAdmin={section=>go(section)} queued={queue.length} user={user} settings={settings} platforms={platforms} run={run} refresh={refresh} busy={busy} logout={logout}/>}
    {!!toast&&<Toast text={toast}/>}
   </View>
   <View style={styles.nav} accessibilityRole="tablist">{tabs.map(t=>{const on=tab===t.id;const center=t.id==='sale';return <Pressable key={t.id} testID={`tab-${t.id}`} accessibilityRole="tab" accessibilityLabel={t.name} accessibilityState={{selected:on}} onPress={()=>t.id==='history'?history():go(t.id)} style={styles.navItem}>

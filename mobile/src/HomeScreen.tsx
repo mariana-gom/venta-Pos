@@ -16,7 +16,7 @@ export function HomeScreen({user, sessions, busy, run, refresh, go, onHistory, o
   const admin = user.role === 'admin';
   // Administrador ve la suma de todas las cajas abiertas; vendedor, solo la suya.
   const scope = admin ? sessions.filter(s => s.state === 'open') : own ? [own] : [];
-  const sum = (key: 'total_cents' | 'cash_cents' | 'electronic_cents' | 'sale_count') => scope.reduce((n, s) => n + s[key], 0);
+  const sum = (key: 'total_cents' | 'cash_cents' | 'electronic_cents' | 'sales_cash_cents' | 'sales_electronic_cents' | 'collection_cash_cents' | 'collection_electronic_cents' | 'credit_cents' | 'sale_count') => scope.reduce((n, s) => n + (s[key]||0), 0);
   const shortcuts = [
     {name: 'Caja', icon: 'inbox' as const, onPress: () => go('cash')},
     {name: 'Historial', icon: 'clock' as const, onPress: onHistory},
@@ -69,8 +69,11 @@ export function HomeScreen({user, sessions, busy, run, refresh, go, onHistory, o
           <Text style={{color: '#CFE8D6', fontSize: 13, fontWeight: '600'}}>Total vendido · {sum('sale_count')} {sum('sale_count') === 1 ? 'venta' : 'ventas'}</Text>
           <Text numberOfLines={1} style={{color: colors.white, fontSize: fitSize(cop(sum('total_cents')), 32, 11), fontWeight: '800', letterSpacing: -0.8, fontVariant: ['tabular-nums']}}>{cop(sum('total_cents'))}</Text>
         </View>
-        <Stat label="Efectivo" value={cop(sum('cash_cents'))} icon="dollar-sign" tone="green"/>
-        <Stat label="Electrónico" value={cop(sum('electronic_cents'))} icon="smartphone" tone="yellow"/>
+        <Stat label="Ventas efectivo" value={cop(sum('sales_cash_cents'))} icon="dollar-sign" tone="green"/>
+        <Stat label="Ventas a crédito" value={cop(sum('credit_cents'))} icon="clock" tone="yellow"/>
+        <Stat label="Ventas electrónico" value={cop(sum('sales_electronic_cents'))} icon="smartphone" tone="yellow"/>
+        <Stat label="Cartera efectivo" value={cop(sum('collection_cash_cents'))} icon="book-open" tone="green"/>
+        <Stat label="Cartera electrónico" value={cop(sum('collection_electronic_cents'))} icon="book-open" tone="yellow"/>
       </View>
       {scope.length === 0 && <Text style={styles.small}>Los valores aparecen cuando hay una caja abierta.</Text>}
     </Section>

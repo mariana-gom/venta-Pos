@@ -3,17 +3,19 @@ import {Pressable, Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import {api, ApiError, documentAction} from './api';
 import {canDisplaySale} from './businessDay';
+import {CancelSaleSheet} from './CancelSaleSheet';
 import {Receipt} from './Receipt';
 import {printLocal, saleTitle, type QueuedSale} from './offline';
 import {Badge, Banner, Button, Card, Choice, Divider, Empty, Field, FooterBar, Header, IconButton, InfoRow, Loading, Page, SearchBar, Section, Segmented, Sheet, bogotaDay, colors, cop, date, dayLabel, diff, isIsoDate, normalizeSearch, quantityLabel, receiptNumber, shortDate, signed, styles, time, useBack} from './ui';
-import type {Sale, Closure, SalesPage, Settings, User, Customer, CashSession} from './types';
+import type {Sale, Closure, SalesPage, Settings, User, Customer, CashSession, Platform} from './types';
 import type {Run} from '../App';
-type Props = {businessDate: string; user: User; settings: Settings; run: Run; busy: boolean; initialSale: Sale | null; initialClosure: Closure | null; sessionFilter: string; clearInitial: () => void; customers: Customer[]; sessions: CashSession[]; queue: QueuedSale[]};
+type Props = {platforms:Platform[];refresh:()=>Promise<void>;businessDate: string; user: User; settings: Settings; run: Run; busy: boolean; initialSale: Sale | null; initialClosure: Closure | null; sessionFilter: string; clearInitial: () => void; customers: Customer[]; sessions: CashSession[]; queue: QueuedSale[]};
 type Period = 'today' | 'yesterday' | 'week' | 'all' | 'range';
 const PERIODS: {id: Period; name: string}[] = [{id: 'today', name: 'Hoy'}, {id: 'yesterday', name: 'Ayer'}, {id: 'week', name: '7 días'}, {id: 'all', name: 'Todo'}, {id: 'range', name: 'Rango'}];
-const methodName = (s: {method?: string; platform_name?: string | null}) => s.method === 'cash' ? 'Efectivo' : s.platform_name || 'Electrónico';
+const methodName = (s: {method?: string; platform_name?: string | null}) => s.method === 'cash' ? 'Efectivo' : s.method==='credit'?'Crédito':s.platform_name || 'Electrónico';
 
-export function HistoryScreen({businessDate, user, settings, run, busy, initialSale, initialClosure, sessionFilter, clearInitial, customers, sessions, queue}: Props) {
+export function HistoryScreen({platforms,refresh,businessDate, user, settings, run, busy, initialSale, initialClosure, sessionFilter, clearInitial, customers, sessions, queue}: Props) {
+  const [cancelOpen,setCancelOpen]=useState(false),[search,setSearch]=useState('');
   const admin = user.role === 'admin';
   const [tab, setTab] = useState(initialClosure ? 'closures' : 'sales'), [activeSession, setActiveSession] = useState(sessionFilter);
   const [storedSale, setSale] = useState<Sale | null>(initialSale), [receipt, setReceipt] = useState(!!initialSale), [closure, setClosure] = useState<Closure | null>(initialClosure);
@@ -46,6 +48,7 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
     const params = new URLSearchParams({page: String(next)});
     if (activeSession) params.set('session_id', activeSession);
     if (method) params.set('method', method);
+    if(search.trim())params.set('search',search.trim());
     if (range.from) params.set('from', range.from);
     if (range.to) params.set('to', range.to);
     if (customer) params.set('customer_id', customer);
@@ -57,7 +60,7 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
   const [noSignal, setNoSignal] = useState(false);
   // Sin señal no es un error: se muestran las ventas guardadas en el celular y un aviso.
   const loadSafe = (next = 1) => load(next).then(() => setNoSignal(false)).catch(e => { if (e instanceof ApiError && e.status === 0) setNoSignal(true); else throw e; });
-  useEffect(() => { if (tab === 'sales' && !rangeError) run(() => loadSafe(1)); }, [tab, range.from, range.to, method, customer, seller, activeSession, businessDate]);
+  useEffect(() => { if (tab === 'sales' && !rangeError) run(() => loadSafe(1)); }, [tab, range.from, range.to, method, customer, seller, activeSession, businessDate, search]);
   useEffect(() => { if (tab === 'closures' && admin) run(async () => setClosures(await api<Closure[]>('/closures'))); }, [tab]);
 
   function back() { if (receipt && sale) { setReceipt(false); return; } setSale(null); setClosure(null); setReceipt(false); clearInitial(); }
@@ -104,14 +107,19 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
       </View>)}
       <Divider/>
       <View style={styles.row}><Text style={styles.h2}>Total</Text><Text style={[styles.metric, {color: colors.green}]}>{cop(sale.total_cents)}</Text></View>
-      {sale.payments?.map((p, i) => <InfoRow key={i} label="Método de pago" value={p.method === 'cash' ? 'Efectivo' : `Electrónico · ${p.platform_name}`}/>)}
+      {!!sale.snapshot.customer_identification&&<InfoRow label="Identificación" value={sale.snapshot.customer_identification}/>}
+      {sale.payments?.map((p, i) => <InfoRow key={i} label="Método de pago" value={p.method === 'cash' ? 'Efectivo' : p.method==='credit'?'Crédito': `Electrónico · ${p.platform_name}`}/>)}
     </Card>
+    {sale.payments?.filter(p=>p.method==='electronic'&&p.reference).map((p,i)=><InfoRow key={i} label="Número de referencia" value={p.reference!}/>)}
+    {sale.cancellation&&<Banner tone="orange" title="Venta anulada" text={sale.cancellation.actor_name+' · '+date(sale.cancellation.created_at)+' · '+sale.cancellation.reason}/>}
+    {admin&&!sale.cancellation&&<Button title="Anular venta" icon="slash" variant="outline" disabled={busy} onPress={()=>setCancelOpen(true)} testID="cancel-sale"/>}
+    {cancelOpen&&admin&&<CancelSaleSheet sale={sale} platforms={platforms} run={run} busy={busy} onClose={()=>setCancelOpen(false)} onDone={async s=>{setSale(s);await refresh();await load(1);}}/>}
     <Button title="Ver comprobante" icon="file-text" size="lg" onPress={() => setReceipt(true)} testID="view-receipt"/>
     <View style={[styles.row, {gap: 10}]}>
       <Button title="Reimprimir" icon="printer" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => printSale(sale, 'print')}/>
       <Button title="Compartir" icon="share-2" variant="secondary" style={{flex: 1}} disabled={busy} onPress={() => printSale(sale, 'share')}/>
     </View>
-    <Text style={[styles.small, {textAlign: 'center'}]}>Las ventas confirmadas son definitivas. El sistema no permite anularlas ni editarlas.</Text>
+    <Text style={[styles.small, {textAlign: 'center'}]}>Las facturas conservan sus datos originales. Las anulaciones administrativas quedan registradas por separado.</Text>
   </Page>;
 
   // ── Detalle de cierre
@@ -127,9 +135,12 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
       <InfoRow label="Cierre" value={`${shortDate(c.closed_at)} · ${time(c.closed_at)}`}/>
       <Divider/>
       <InfoRow label={`Total vendido · ${c.sale_count} ventas`} value={cop(c.total_cents)} strong/>
-      <InfoRow label="Ventas en efectivo" value={cop(c.cash_cents)}/>
-      <InfoRow label="Ventas electrónicas" value={cop(c.electronic_cents)}/>
+      <InfoRow label="Ventas en efectivo" value={cop(c.sales_cash_cents??c.cash_cents)}/>
+      <InfoRow label="Ventas electrónicas" value={cop(c.sales_electronic_cents??c.electronic_cents)}/>
       {c.platforms.map((p, i) => <InfoRow key={i} label={`· ${p.platform_name}`} value={cop(p.amount)}/>)}
+      <InfoRow label="Crédito registrado" value={cop(c.credit_cents||0)}/>
+      <InfoRow label="Cobros de cartera en efectivo" value={cop(c.collection_cash_cents||0)}/>
+      <InfoRow label="Cobros de cartera electrónicos" value={cop(c.collection_electronic_cents||0)}/>
       <InfoRow label="Base inicial" value={cop(c.opening_cents)}/>
     </Card>
     <Card>
@@ -144,9 +155,12 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
       <InfoRow label="Diferencia electrónico" value={signed(c.electronic_difference_cents)} tone={c.electronic_difference_cents === 0 ? 'green' : 'orange'}/>
       <Text style={styles.small}>{diff(c.electronic_difference_cents)}</Text>
       <Divider/>
+      <InfoRow label="Crédito reportado" value={cop(c.declared_credit_cents||0)}/>
+      <InfoRow label="Diferencia de crédito" value={signed(c.credit_difference_cents||0)}/>
       <InfoRow label="Diferencia total" value={signed(c.total_difference_cents)} strong/>
       {!!c.notes && <Text style={styles.body}>Observaciones: {c.notes}</Text>}
     </Card>
+    {closure.adjustments?.map(a=><Banner key={a.id} tone="orange" title="Ajuste posterior al cierre" text={date(a.created_at)+' · '+a.detail.reason+' · '+cop(a.detail.reversed_cents)}/>)}
     <Button title="Ver ventas incluidas" icon="list" variant="secondary" onPress={() => { setActiveSession(closure.session_id); setPeriod('all'); setClosure(null); setTab('sales'); }}/>
     <Card>
       <Text style={styles.sectionTitle}>Documento del cierre</Text>
@@ -180,6 +194,7 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
     {admin && <Segmented items={[{id: 'sales', name: 'Ventas'}, {id: 'closures', name: 'Cierres'}]} value={tab} onChange={setTab} testID="history-tabs"/>}
     {tab === 'sales' ? <>
       {!admin && <Banner tone="gray" text="Solo puedes consultar las ventas del día actual"/>}
+      <SearchBar value={search} onChange={setSearch} placeholder="Buscar factura, cliente o referencia"/>
       {noSignal && <Banner tone="gray" text="Sin señal: el historial del sistema se verá al recuperar internet. Abajo están las ventas guardadas en este celular."/>}
       {visibleQueue.length > 0 && <Section title={`Por subir (${visibleQueue.length})`}>
         <View style={{backgroundColor: colors.yellowSoft, borderRadius: 16, overflow: 'hidden'}}>
@@ -201,7 +216,7 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
       </View>}
       {rangeError && <Text style={styles.fieldError}>{rangeError}</Text>}
       <View style={[styles.row, {alignItems: 'flex-start', gap: 8}]}>
-        <View style={{flex: 1}}><Choice items={[{id: '', name: 'Todo pago'}, {id: 'cash', name: 'Efectivo'}, {id: 'electronic', name: 'Electrónico'}]} value={method} onChange={setMethod}/></View>
+        <View style={{flex: 1}}><Choice items={[{id: '', name: 'Todo pago'}, {id: 'cash', name: 'Efectivo'}, {id: 'electronic', name: 'Electrónico'},{id:'credit',name:'Crédito'}]} value={method} onChange={setMethod}/></View>
         <IconButton icon="sliders" label="Más filtros" onPress={() => setFilters(true)} tone={activeChips.length ? 'green' : 'gray'}/>
       </View>
       {activeChips.length > 0 && <View style={styles.wrap}>{activeChips.map(c => <Pressable key={c.key} accessibilityRole="button" accessibilityLabel={`Quitar filtro ${c.text}`} onPress={c.clear} style={[styles.chip, styles.chipOn]}><Text style={[styles.chipText, {color: 'white'}]}>{c.text}</Text><Feather name="x" size={14} color="white"/></Pressable>)}</View>}
@@ -222,8 +237,8 @@ export function HistoryScreen({businessDate, user, settings, run, busy, initialS
           {section.items.map((s, i) => <Pressable key={s.id} testID={`sale-row-${s.number}`} accessibilityRole="button" accessibilityLabel={`Venta ${receiptNumber(s.number)}, ${s.snapshot.customer_name}, ${cop(s.total_cents)}`} onPress={() => run(async () => { const requestedDate = businessDate, ticket = ++request.current; const detail = await api<Sale>(`/sales/${s.id}`); if (ticket === request.current && requestedDate === currentDate.current) { setSale(detail); setReceipt(false); } })}
             style={({pressed}) => [{flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14, minHeight: 64}, i > 0 && {borderTopWidth: 1, borderTopColor: colors.line}, pressed && {backgroundColor: colors.greenSoft}]}>
             <View style={{flex: 1, gap: 2}}>
-              <Text style={{fontSize: 15, fontWeight: '800', color: colors.ink}}>Venta {receiptNumber(s.number)}</Text>
-              <Text numberOfLines={1} style={styles.small}>{time(s.created_at)} · {s.snapshot.customer_name}{admin ? ` · ${s.snapshot.seller_name}` : ''}</Text>
+              <Text style={{fontSize: 15, fontWeight: '800', color: colors.ink}}>Venta {receiptNumber(s.number)}{s.status==='cancelled'?' · Anulada':''}</Text>
+              <Text numberOfLines={1} style={styles.small}>{time(s.created_at)} · {s.snapshot.customer_name}{s.method==='electronic'&&s.reference?' · Ref. '+s.reference:''}{admin ? ` · ${s.snapshot.seller_name}` : ''}</Text>
             </View>
             <View style={{alignItems: 'flex-end', gap: 4}}><Text style={[styles.money, {fontSize: 15}]}>{cop(s.total_cents)}</Text><Badge text={methodName(s)} tone={s.method === 'cash' ? 'green' : 'gray'}/></View>
           </Pressable>)}

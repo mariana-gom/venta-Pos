@@ -1,3 +1,4 @@
+import {migrateOperations} from './migrations.js';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -9,7 +10,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/pos.sql
  const db = new DatabaseSync(path);
  db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
  migrate(db);
- for (const table of ['sales','sale_items','payments','closures','closure_notes','audit','documents']) {
+ migrateOperations(db);
+ for (const table of ['sales','sale_items','payments','closures','closure_notes','audit','documents','debts','collections','collection_allocations','cancellations','allocation_resolutions','refunds','closure_adjustments','inventory_movements','route_assignments','import_runs','operation_requests']) {
   for (const operation of ['UPDATE','DELETE']) db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_no_${operation} BEFORE ${operation} ON ${table} BEGIN SELECT RAISE(ABORT,'Registro inmutable'); END;`);
  }
  return db;

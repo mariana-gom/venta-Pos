@@ -57,7 +57,7 @@ export async function receiptHtml(sale: Sale, width: 58 | 80) {
   const place = [s.business_address, s.business_city].filter(Boolean).join(' · ');
   const img = await logoDataUri();
   const items = (sale.items || []).map(i => `<div class="item"><b>${esc(i.name.toUpperCase())}</b>${pair(`${quantityLabel(i.quantity_milli, i.unit)} × ${cop(i.price_cents)}${i.unit === 'kg' ? '/kg' : ''}`, cop(i.subtotal_cents))}</div>`).join('');
-  const payments = (sale.payments || []).map(p => pair('Método de pago', p.method === 'cash' ? 'EFECTIVO' : (p.platform_name || 'ELECTRÓNICO').toUpperCase())).join('');
+  const payments = (sale.payments || []).map(p => (p.method==='electronic'&&p.reference?pair('Número de referencia',p.reference):'')+pair('Método de pago', p.method === 'cash' ? 'EFECTIVO' : p.method==='credit'?'CRÉDITO': (p.platform_name || 'ELECTRÓNICO').toUpperCase())).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><style>
 @page{size:${width}mm auto;margin:0}*{box-sizing:border-box}body{margin:0;font-family:Helvetica,Arial,sans-serif;color:#000;font-size:${size}px;line-height:1.35}
 .t{width:${body}mm;margin:3mm auto 8mm}.c{text-align:center}.logo{display:block;margin:0 auto 2px;width:${width === 58 ? 26 : 32}mm}

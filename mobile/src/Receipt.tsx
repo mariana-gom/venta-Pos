@@ -37,6 +37,8 @@ export function Receipt({sale, width}: {sale: Sale; width: 58 | 80}) {
     <Pair left="Vendedor" right={s.seller_name}/>
     {!!sale.session_number && <Pair left="Caja" right={`#${sale.session_number}`}/>}
     <View style={{height: 4}}/>
+    {sale.cancellation && <><T bold center big>ANULADA</T><T>{sale.cancellation.actor_name} · {shortDate(sale.cancellation.created_at)}</T><T>Motivo: {sale.cancellation.reason}</T></>}
+    {!!s.customer_identification && <Pair left="Identificación" right={s.customer_identification}/>}
     <Pair left="Cliente" right={s.customer_name}/>
     <Pair left="Ciudad" right={s.customer_city}/>
     <View style={r.dash}/>
@@ -51,9 +53,11 @@ export function Receipt({sale, width}: {sale: Sale; width: 58 | 80}) {
     <View style={r.double}/>
     <Pair left="Productos" right={String(sale.items?.length || 0)}/>
     {sale.payments?.map((p, i) => <View key={i}>
-      <Pair left="Método de pago" right={p.method === 'cash' ? 'EFECTIVO' : (p.platform_name || 'ELECTRÓNICO').toUpperCase()}/>
-      {p.method !== 'cash' && <Text style={{textAlign: 'right', fontSize: size - 2, color: '#111'}}>Pago electrónico</Text>}
+      {p.method==='electronic'&&p.reference&&<Pair left="Número de referencia" right={p.reference}/>}
+      <Pair left="Método de pago" right={p.method === 'cash' ? 'EFECTIVO' : p.method==='credit'?'CRÉDITO': (p.platform_name || 'ELECTRÓNICO').toUpperCase()}/>
+      {p.method === 'electronic' && <Text style={{textAlign: 'right', fontSize: size - 2, color: '#111'}}>Pago electrónico</Text>}
     </View>)}
+    {sale.payments?.some(p=>p.method==='credit')&&<T small>Valor pendiente de pago. No recibido en caja.</T>}
     <View style={r.dash}/>
     <T bold center>¡Gracias por comprar en {brand}!</T>
     <View style={{height: 4}}/>

@@ -79,3 +79,15 @@ export async function savePending(userId:string,body:Record<string,unknown>|null
  if(Platform.OS==='web'){if(body)localStorage.setItem(key,JSON.stringify(body));else localStorage.removeItem(key);}
  else{if(body)await SecureStore.setItemAsync(key,JSON.stringify(body));else await SecureStore.deleteItemAsync(key);}
 }
+export async function uploadExcel(uri:string):Promise<import('./types').ImportPreview>{
+ let bytes:ArrayBuffer;
+ if(Platform.OS==='web')bytes=await(await fetch(uri)).arrayBuffer();
+ else {const encoded=await FileSystem.readAsStringAsync(uri,{encoding:FileSystem.EncodingType.Base64});const raw=atob(encoded),view=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)view[i]=raw.charCodeAt(i);bytes=view.buffer;}
+ const response=await fetch(API_URL+'/api/products/import/preview',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'},body:bytes});
+ const result=await response.json();if(!response.ok)throw new ApiError(result.error||'No se pudo leer el Excel.',response.status);return result;
+}
+export async function downloadFile(path:string,name:string,mime='application/pdf'){
+ const url=API_URL+'/api'+path;
+ if(Platform.OS==='web'){const response=await fetch(url,{cache:'no-store',headers:{Authorization:'Bearer '+token}});if(!response.ok)throw new ApiError('No se pudo descargar el archivo.',response.status);const uri=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=uri;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(uri),1000);}
+ else {const result=await FileSystem.downloadAsync(url,FileSystem.cacheDirectory+name,{headers:{Authorization:'Bearer '+token}});try{if(result.status!==200)throw new ApiError('No se pudo descargar el archivo.',result.status);await Sharing.shareAsync(result.uri,{mimeType:mime});}finally{await FileSystem.deleteAsync(result.uri,{idempotent:true});}}
+}

@@ -13,7 +13,7 @@ const root=fileURLToPath(new URL('../',import.meta.url));mkdirSync(join(root,'tm
 const directory=mkdtempSync(join(root,'tmp','e2e-'));const db=openDatabase(join(directory,'test.sqlite'));
 const password=randomBytes(24).toString('hex');
 const admin=await createUser(db,{name:'Administradora prueba',username:'admin-test',password,role:'admin'});
-await createUser(db,{name:'Vendedora prueba',username:'seller-test',password,role:'seller'});
+const seller=await createUser(db,{name:'Vendedora prueba',username:'seller-test',password,role:'seller'});
 const app=express();const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
 const origin=`http://127.0.0.1:${server.address().port}`;process.env.CORS_ORIGINS=origin;
 app.use(express.static(join(directory,'web')));app.use(createApp(db));
@@ -27,7 +27,9 @@ try{
  // Ejemplo del negocio: pollo por kg y gaseosa por unidad con stock controlado.
  await call('/products',{name:'Pollo',price:'12000',unit:'kg'});await call('/products',{name:'Gaseosa',price:'4000',unit:'unit',stock:'10'});
  await call('/products',{name:'Queso campesino',price:'24000',unit:'kg'});await call('/products',{name:'Chorizo santarrosano artesanal ahumado extra picante de la casa x 500 g',price:'18500',unit:'unit'});
- await call('/customers',{name:'Ana',city:'Bogotá'});
+ await call('/customers',{name:'Ana',city:'Bogotá',identification:'001234'});
+ const route=await call('/routes',{name:'Ruta prueba',request_key:crypto.randomUUID()});db.prepare('UPDATE users SET route_id=? WHERE id=?').run(route.id,seller.id);db.prepare('INSERT INTO route_assignments VALUES(?,?,?,?,?)').run(crypto.randomUUID(),seller.id,route.id,admin.id,new Date(Date.now()-86400000).toISOString());
+ const soda=(await call('/products')).find(p=>p.name==='Gaseosa');await call('/inventory',{product_id:soda.id,route_id:route.id,quantity:'10',kind:'allocate',reason:'Distribución inicial',request_key:crypto.randomUUID()});
  browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:1,acceptDownloads:true});page=await context.newPage();
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  const {expect}=await import('@playwright/test');
@@ -69,12 +71,12 @@ try{
  await id('customer-picker').click();await id('customer-new').click();await page.getByLabel('Nombre del cliente').fill('Manuel');await page.getByLabel('Ciudad o municipio').fill('El Rosal');await id('customer-create').click();
  await expect(id('customer-picker')).toContainText('Manuel');await expect(id('qty-Gaseosa')).toHaveValue('3');
  // Pago electrónico y confirmación con doble clic: debe existir una sola venta.
- await id('checkout').click();await page.getByRole('radio',{name:'Nequi'}).click();await capture('vender-pago');
+ await id('checkout').click();await page.getByRole('radio',{name:'Nequi'}).click();await expect(id('confirm-sale')).toBeDisabled();await id('electronic-reference').fill('000-ABC123');await capture('vender-pago');
  await id('confirm-sale').dblclick();await expect(id('sale-done')).toBeVisible();await expect(id('done-total')).toContainText('1.518.000');await capture('venta-registrada');
  const sales=await call('/sales');if(sales.count!==1)throw new Error(`Se esperaban 1 venta, hay ${sales.count}`);
  const gaseosa=(await call('/products')).find(p=>p.name==='Gaseosa');if(gaseosa.stock_milli!==7000)throw new Error('Stock de gaseosa no actualizado: '+gaseosa.stock_milli);
  // Comprobante: vista previa con datos guardados y descarga del PDF.
- await id('sale-view-receipt').click();await expect(id('receipt-preview')).toBeVisible();await expect(id('receipt-preview')).toContainText('Venta #0001');await expect(id('receipt-preview')).toContainText('125,5 kg');await expect(id('receipt-preview')).toContainText('No es factura electrónica.');await capture('comprobante');
+ await id('sale-view-receipt').click();await expect(id('receipt-preview')).toBeVisible();await expect(id('receipt-preview')).toContainText('Venta #0001');await expect(id('receipt-preview')).toContainText('125,5 kg');await expect(id('receipt-preview')).toContainText('No es factura electrónica.');await expect(id('receipt-preview')).toContainText('000-ABC123');await capture('comprobante');
  const download=page.waitForEvent('download');await id('receipt-pdf').click();await(await download).saveAs(join(directory,'sale.pdf'));
  // Segunda venta en efectivo con cálculo de cambio.
  await id('tab-sale').click();await id('customer-picker').click();await page.getByRole('button',{name:'Ana, Bogotá'}).click();await id('add-Gaseosa').click();await id('checkout').click();await page.getByRole('radio',{name:'Efectivo'}).click();

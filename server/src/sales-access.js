@@ -28,3 +28,10 @@ export function canReadSale(user,sale,day=salesDay()) {
 export function saleAcknowledgement(sale) {
  return {id:sale.id,number:sale.number,history_restricted:true,message:'Solo puedes consultar las ventas del día actual'};
 }
+
+export function businessInstant(date,time='12:00'){
+ const zone=businessTimeZone();const desired=Date.parse(date+'T'+time+':00.000Z');let candidate=desired;
+ const formatter=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+ for(let i=0;i<5;i++){const parts=formatter.formatToParts(new Date(candidate)),part=t=>parts.find(p=>p.type===t).value;const observed=Date.parse(part('year')+'-'+part('month')+'-'+part('day')+'T'+part('hour')+':'+part('minute')+':'+part('second')+'.000Z');const delta=desired-observed;if(!delta)return new Date(candidate).toISOString();candidate+=delta;}
+ throw Object.assign(new Error('Fecha y hora inexistentes en la zona del negocio.'),{status:400});
+}

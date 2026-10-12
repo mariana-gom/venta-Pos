@@ -10,7 +10,7 @@ const OPENING_PRESETS = [0, 5000000, 10000000, 20000000];
 const label = (s: CashSession) => `Caja${s.number ? ` #${s.number}` : ''}`;
 
 export function CashScreen({queued, sessions, user, run, refresh, busy, onClosure, onHistory, onSell}: Props) {
-  const [opening, setOpening] = useState(''), [selected, setSelected] = useState<CashSession | null>(null), [cash, setCash] = useState(''), [electronic, setElectronic] = useState(''), [notes, setNotes] = useState(''), [review, setReview] = useState(false), [showClosed, setShowClosed] = useState(8), [now, setNow] = useState(new Date());
+  const [opening, setOpening] = useState(''), [selected, setSelected] = useState<CashSession | null>(null), [cash, setCash] = useState(''), [electronic, setElectronic] = useState(''), [notes, setNotes] = useState(''),[credit,setCredit]=useState('0'), [review, setReview] = useState(false), [showClosed, setShowClosed] = useState(8), [now, setNow] = useState(new Date());
   const admin = user.role === 'admin';
   const own = sessions.find(s => s.opened_by === user.id && s.state === 'open');
   const others = sessions.filter(s => s.state === 'open' && s.id !== own?.id);
@@ -22,16 +22,17 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
   const expected = selected ? selected.opening_cents + selected.cash_cents : 0;
   const cashCents = moneyToCents(cash), elecCents = moneyToCents(electronic);
   const cashDiff = cashCents === null ? 0 : cashCents - expected, elecDiff = elecCents === null ? 0 : elecCents - (selected?.electronic_cents || 0);
-  const valid = cashCents !== null && elecCents !== null;
+  const creditCents=moneyToCents(credit),creditDiff=(creditCents||0)-(selected?.credit_cents||0);
+  const valid = cashCents !== null && elecCents !== null && creditCents!==null;
   const openingCents = opening.trim() ? moneyToCents(opening) : 0;
 
   async function startClose(session: CashSession) {
     const latest = await api<CashSession>(`/cash-sessions/${session.id}`);
     if (latest.state !== 'open') throw new Error('Esta caja ya fue cerrada. Desliza hacia abajo o toca Actualizar para ver el estado actual.');
-    setSelected({...latest, number: session.number}); setCash(''); setElectronic(''); setNotes(''); setReview(false);
+    setSelected({...latest, number: session.number}); setCash(''); setElectronic(''); setNotes(''); setCredit('0'); setReview(false);
   }
   async function close() {
-    const c = await api<Closure>(`/cash-sessions/${selected!.id}/close`, 'POST', {reviewed_sale_count: selected!.sale_count, declared_cash: normalizeMoney(cash), declared_electronic: normalizeMoney(electronic), notes});
+    const c = await api<Closure>(`/cash-sessions/${selected!.id}/close`, 'POST', {reviewed_revision:selected!.session_revision,reviewed_sale_count: selected!.sale_count, declared_cash: normalizeMoney(cash), declared_electronic: normalizeMoney(electronic),declared_credit:normalizeMoney(credit), notes});
     setReview(false); setSelected(null); onClosure(c); await refresh();
   }
 
@@ -42,7 +43,13 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
       <Text style={styles.sectionTitle}>Lo que dice el sistema</Text>
       <InfoRow label="Ventas registradas" value={String(selected.sale_count)}/>
       <InfoRow label="Base inicial" value={cop(selected.opening_cents)}/>
-      <InfoRow label="Ventas en efectivo" value={cop(selected.cash_cents)}/>
+      <InfoRow label="Ventas en efectivo" value={cop(selected.sales_cash_cents??selected.cash_cents)}/>
+      <InfoRow label="Ventas electrónicas" value={cop(selected.sales_electronic_cents??selected.electronic_cents)}/>
+      <InfoRow label="Ventas a crédito" value={cop(selected.credit_cents||0)}/>
+      <InfoRow label="Cobros cartera en efectivo" value={cop(selected.collection_cash_cents||0)}/>
+      <InfoRow label="Cobros cartera electrónicos" value={cop(selected.collection_electronic_cents||0)}/>
+      <InfoRow label="Devoluciones en efectivo" value={cop(selected.refund_cash_cents||0)}/>
+      <InfoRow label="Devoluciones electrónicas" value={cop(selected.refund_electronic_cents||0)}/>
       <InfoRow label="Efectivo esperado" value={cop(expected)} strong/>
       <Divider/>
       <InfoRow label="Pagos electrónicos" value={cop(selected.electronic_cents)} strong/>
@@ -55,6 +62,9 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
       <Field label="Pagos electrónicos verificados en las cuentas" kind="decimal" prefix="$" value={electronic} onChange={setElectronic} placeholder="0" error={electronic && elecCents === null ? 'Escribe un valor válido' : null} testID="close-electronic"/>
       <Button title={`Coincide con lo registrado (${cop(selected.electronic_cents)})`} variant="ghost" size="sm" onPress={() => setElectronic(moneyInput(selected.electronic_cents))} style={{alignSelf: 'flex-start'}}/>
       {elecCents !== null && <DiffLine value={elecDiff}/>}
+      <Field label="Crédito reportado por el vendedor" kind="decimal" prefix="$" value={credit} onChange={setCredit} hint="Conciliación únicamente: no cambia las deudas de clientes." testID="close-credit"/>
+      <InfoRow label="Crédito registrado" value={cop(selected.credit_cents||0)}/>
+      {creditCents!==null&&<DiffLine value={creditDiff}/>}
       <Field label="Observaciones (opcional)" value={notes} onChange={setNotes} multiline placeholder="Ej. Se pagó un domicilio con efectivo de la caja"/>
     </Card>
     <Button title="Revisar cierre" icon="clipboard" size="lg" disabled={!valid || busy} onPress={() => setReview(true)} testID="review-close"/>
@@ -65,6 +75,7 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
         <Text style={styles.small}>{diff(cashDiff)}</Text>
         <InfoRow label="Electrónico" value={signed(elecDiff)} tone={elecDiff === 0 ? 'green' : 'orange'}/>
         <Text style={styles.small}>{diff(elecDiff)}</Text>
+        <InfoRow label="Diferencia crédito" value={signed(creditDiff)} tone={creditDiff===0?'green':'orange'}/>
         <Divider/>
         <InfoRow label="Diferencia total" value={signed(cashDiff + elecDiff)} strong/>
       </Card>
@@ -123,6 +134,8 @@ function SessionCard({session: s, mine, admin, busy, onHistory, onClose, onSell}
       <Badge text="Abierta" icon="unlock"/>
     </View>
     <View style={{backgroundColor: colors.greenSoft, borderRadius: 14, padding: 14, gap: 2}}>
+      <InfoRow label="Ventas a crédito" value={cop(s.credit_cents||0)}/>
+      <InfoRow label="Cobros cartera" value={cop((s.collection_cash_cents||0)+(s.collection_electronic_cents||0))}/>
       <Text style={[styles.small, {color: colors.greenDark}]}>Total vendido · {s.sale_count} {s.sale_count === 1 ? 'venta' : 'ventas'}</Text>
       <Text style={[styles.metric, {fontSize: 28, color: colors.greenDark}]}>{cop(s.total_cents)}</Text>
     </View>
