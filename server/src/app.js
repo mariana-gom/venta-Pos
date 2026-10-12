@@ -8,7 +8,9 @@ import { schemas,validate } from './validation.js';
 import { money,quantity,scaled } from './money.js';
 import { sessionFor,totals,recordSale,saleDetail,closeSession,closureDetail,fail,SESSION_NUMBER } from './service.js';
 import {storedPdf,generateDocuments} from './documents.js';
+import {salesDay,dayStart,nextDay,businessTimeZone,calendarDay,canReadSale,saleAcknowledgement} from './sales-access.js';
 export function createApp(db) {
+ businessTimeZone();
  const app=express();app.disable('x-powered-by');app.use(helmet());
  // Detrás de un proxy (Railway, Render, Nginx) indica cuántos saltos confiar para que el límite de login use la IP real.
  if(process.env.TRUST_PROXY)app.set('trust proxy',/^\d+$/.test(process.env.TRUST_PROXY)?Number(process.env.TRUST_PROXY):process.env.TRUST_PROXY);
@@ -40,7 +42,8 @@ export function createApp(db) {
   transaction(db,()=>{db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash,u.id);db.prepare('DELETE FROM auth_sessions WHERE user_id=?').run(u.id);audit(db,req.user.id,'user.password_reset',u.id);});res.json({ok:true});
  });
  const settingsQuery=`SELECT business_name,paper_width,${BUSINESS_FIELDS.join(',')} FROM settings WHERE id=1`;
- app.get('/api/settings',(_,res)=>res.json(db.prepare(settingsQuery).get()));
+ app.get('/api/settings',(_,res)=>res.json({...db.prepare(settingsQuery).get(),time_zone:businessTimeZone()}));
+ app.get('/api/sales/access',(req,res)=>res.json({...salesDay(),today_only:req.user.role!=='admin'}));
  app.put('/api/settings',admin,validate(schemas.settings),(req,res)=>{
   // Campos fiscales omitidos conservan su valor; una cadena vacía los borra del comprobante.
   const fields=BUSINESS_FIELDS.filter(f=>req.input[f]!==undefined);
@@ -83,33 +86,34 @@ export function createApp(db) {
  app.get('/api/cash-sessions',(req,res)=>{
   const columns=`c.*,u.name AS opener_name,${SESSION_NUMBER} AS number`;
   const rows=req.user.role==='admin'?db.prepare(`SELECT ${columns} FROM cash_sessions c JOIN users u ON u.id=c.opened_by ORDER BY c.opened_at DESC`).all():db.prepare(`SELECT ${columns} FROM cash_sessions c JOIN users u ON u.id=c.opened_by WHERE c.opened_by=? ORDER BY c.opened_at DESC`).all(req.user.id);
-  res.json(rows.map(c=>({...c,...totals(db,c.id)})));
+  const day=req.user.role==='admin'?null:salesDay();res.json(rows.map(c=>({...c,...totals(db,c.id,day),...(day?{sales_date:day.date}:{})})));
  });
  app.post('/api/cash-sessions',validate(schemas.opening),(req,res)=>res.status(201).json(transaction(db,()=>{
   if(db.prepare("SELECT id FROM cash_sessions WHERE opened_by=? AND state='open'").get(req.user.id))fail(409,'Ya tienes una caja abierta.');
   const sessionId=id();db.prepare('INSERT INTO cash_sessions VALUES (?,?,?,?,?,?)').run(sessionId,req.user.id,now(),money(req.input.opening),'open',null);audit(db,req.user.id,'cash.open',sessionId,req.input);return sessionFor(db,req.user,sessionId);
  })));
- app.get('/api/cash-sessions/:id',(req,res)=>{const session=sessionFor(db,req.user,req.params.id);const computed=totals(db,session.id);res.json({...session,...computed,expected_cash_cents:session.opening_cents+computed.cash_cents,closure_id:db.prepare('SELECT id FROM closures WHERE session_id=?').get(session.id)?.id||null});});
- app.post('/api/sales',validate(schemas.sale),async(req,res)=>{const sale=recordSale(db,req.user,req.input);res.status(201).json({...sale,...await generateDocuments(db,'sale',sale)});});
+ app.get('/api/cash-sessions/:id',(req,res)=>{const session=sessionFor(db,req.user,req.params.id);const computed=totals(db,session.id,req.user.role==='admin'?null:salesDay());res.json({...session,...computed,expected_cash_cents:session.opening_cents+computed.cash_cents,closure_id:db.prepare('SELECT id FROM closures WHERE session_id=?').get(session.id)?.id||null});});
+ app.post('/api/sales',validate(schemas.sale),async(req,res)=>{const sale=recordSale(db,req.user,req.input);if(sale.history_restricted)return res.status(201).json(sale);const documents=await generateDocuments(db,'sale',sale);res.status(201).json(canReadSale(req.user,sale)?{...sale,...documents}:saleAcknowledgement(sale));});
  app.get('/api/sales',(req,res)=>{
   const filter=z.object({session_id:z.string().uuid().optional(),seller_id:z.string().uuid().optional(),customer_id:z.string().uuid().optional(),method:z.enum(['cash','electronic']).optional(),from:z.iso.date().optional(),to:z.iso.date().optional(),page:z.coerce.number().int().min(1).max(100000).default(1)}).safeParse(req.query);
   if(!filter.success)fail(400,'Filtros inválidos.');const f=filter.data;const where=[],params=[];
-  if(req.user.role!=='admin'){where.push('s.seller_id=?');params.push(req.user.id);}
+  const day=salesDay();db.function('business_day',value=>calendarDay(value,day.time_zone));
+  if(req.user.role!=='admin'){where.push('s.seller_id=?','s.created_at>=?','s.created_at<?');params.push(req.user.id,day.start,day.end);}
   for(const key of ['session_id','seller_id','customer_id']) if(f[key]){where.push(`s.${key}=?`);params.push(f[key]);}
   if(f.method){where.push('p.method=?');params.push(f.method);}
-  if(f.from){where.push('s.created_at>=?');params.push(`${f.from}T05:00:00.000Z`);}
-  if(f.to){const date=new Date(`${f.to}T05:00:00.000Z`);date.setUTCDate(date.getUTCDate()+1);where.push('s.created_at<?');params.push(date.toISOString());}
+  if(f.from){where.push('s.created_at>=?');params.push(dayStart(f.from,day.time_zone));}
+  if(f.to){where.push('s.created_at<?');params.push(dayStart(nextDay(f.to),day.time_zone));}
   const base=`FROM sales s JOIN payments p ON p.sale_id=s.id ${where.length?'WHERE '+where.join(' AND '):''}`;
   const count=db.prepare(`SELECT COUNT(DISTINCT s.id) AS n ${base}`).get(...params).n;
   const rows=db.prepare(`SELECT s.*,p.method,p.platform_name ${base} ORDER BY s.created_at DESC LIMIT 50 OFFSET ?`).all(...params,(f.page-1)*50).map(s=>({...s,snapshot:JSON.parse(s.snapshot)}));
   // Primera versión: un pago por venta. Modelo de pagos permite ampliación a varios.
-  const groups={};for(const [key,expr] of Object.entries({seller:'s.seller_id',customer:'s.customer_id',date:"date(s.created_at,'-5 hours')",method:'p.method',platform:'p.platform_name'}))groups[key]=db.prepare(`SELECT ${expr} AS key,COUNT(*) AS count,SUM(p.amount_cents) AS total_cents ${base} GROUP BY ${expr}`).all(...params);
-  res.json({sales:rows,count,page:f.page,groups});
+  const groups={};for(const [key,expr] of Object.entries({seller:'s.seller_id',customer:'s.customer_id',date:'business_day(s.created_at)',method:'p.method',platform:'p.platform_name'}))groups[key]=db.prepare(`SELECT ${expr} AS key,COUNT(*) AS count,SUM(p.amount_cents) AS total_cents ${base} GROUP BY ${expr}`).all(...params);
+  res.json({sales:rows,count,page:f.page,groups,access:{...day,today_only:req.user.role!=='admin'}});
  });
  app.get('/api/sales/:id',(req,res)=>res.json(saleDetail(db,req.user,req.params.id)));
  app.get('/api/sales/:id/pdf',async(req,res)=>{
   const width=paperWidth(db,req.query.width);const sale=saleDetail(db,req.user,req.params.id);
-  res.type('pdf').set('Content-Disposition',`inline; filename="venta-${sale.number}-${width}mm.pdf"`).send(await storedPdf(db,'sale',sale,width));
+  const content=await storedPdf(db,'sale',sale,width);saleDetail(db,req.user,sale.id);res.type('pdf').set('Content-Disposition',`inline; filename="venta-${sale.number}-${width}mm.pdf"`).send(content);
  });
  app.post('/api/cash-sessions/:id/close',admin,validate(schemas.closing),async(req,res)=>{const closure=closeSession(db,req.user,req.params.id,req.input);res.status(201).json({...closure,...await generateDocuments(db,'closure',closure)});});
  app.get('/api/closures',admin,(_,res)=>res.json(db.prepare(`SELECT cl.*,${SESSION_NUMBER} AS session_number FROM closures cl JOIN cash_sessions c ON c.id=cl.session_id ORDER BY cl.created_at DESC`).all().map(c=>({...c,snapshot:JSON.parse(c.snapshot)}))));

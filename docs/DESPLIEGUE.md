@@ -21,6 +21,8 @@ La API usa SQLite en un archivo y debe correr como **un solo servidor permanente
    | `TRUST_PROXY` | `1` |
    | `CORS_ORIGINS` | URL de Vercel, p. ej. `https://danys-pos.vercel.app` (varias separadas por coma, sin `/` final) |
 
+   Configura opcionalmente `BUSINESS_TIME_ZONE` con una zona IANA. Sin configurar, se utiliza `America/Bogota`. La API calcula el intervalo `[00:00, 00:00 del día siguiente)` en esa zona y bloquea consultas históricas de vendedores, incluidos PDF y totales. La web obtiene la zona y el reloj de la API; refresca y descarta información del día anterior al cambiar de fecha o volver al primer plano. Las ventas pendientes de ruta se conservan para sincronizar, pero no se muestran si pertenecen a otro día. Los reintentos de estas ventas reciben solo confirmación con ID y número.
+
    `PORT` lo asigna Railway. Node 24 se toma de `engines` en `server/package.json`.
 5. Despliega y abre `https://<tu-api>/health`: debe responder `{"ok":true}`.
 6. Crea el primer administrador una sola vez, dentro del servidor (instala la CLI con `npm i -g @railway/cli`):

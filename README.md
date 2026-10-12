@@ -48,7 +48,7 @@ Interfaz mobile first con la identidad de DANNY'S: logo oficial (`mobile/assets/
 Navegación inferior de cinco pestañas: Inicio, Caja, **Vender** (al centro), Catálogo e Historial. Perfil, configuración y cierre de sesión se abren desde el avatar del encabezado. El botón atrás de Android cierra primero hojas y subpantallas y luego vuelve a Inicio.
 
 - **Vender:** cliente en una fila tocable (buscar o crear sin salir de la venta), búsqueda sin tildes, unidades con un toque y kilos con hoja de peso (atajos 0,25 · 0,5 · 1 · 1,5 · 2 · 3 kg, coma o punto decimal). Carrito con − / + y edición directa. El total y el botón Cobrar quedan fijos sobre la navegación. Pago en un toque (Efectivo o cada plataforma activa) con cálculo de cambio. La confirmación tiene bloqueo contra doble toque y, al terminar, ofrece imprimir, compartir, ver comprobante o iniciar otra venta.
-- **Historial:** filtros Hoy, Ayer, 7 días, Todo y Rango; método de pago; cliente y vendedor. Detalle de venta y vista previa del comprobante antes de imprimir o compartir.
+- **Historial:** los vendedores solo consultan sus ventas del día actual; el administrador conserva los filtros Hoy, Ayer, 7 días, Todo y Rango; método de pago; cliente y vendedor. Detalle de venta y vista previa del comprobante antes de imprimir o compartir.
 
 ## Flujo de operación
 

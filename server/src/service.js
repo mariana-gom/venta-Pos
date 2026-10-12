@@ -1,6 +1,7 @@
 import { id, now, audit, transaction } from './db.js';
 import { money, quantity, subtotal } from './money.js';
 import { digest } from './auth.js';
+import {canReadSale,saleAcknowledgement} from './sales-access.js';
 export const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 // Número corto y legible de caja (#1, #2…). Las cajas nunca se borran, así que el orden de inserción es estable.
 export const SESSION_NUMBER='(SELECT COUNT(*) FROM cash_sessions x WHERE x.rowid<=c.rowid)';
@@ -11,17 +12,24 @@ export function sessionFor(db,user,sessionId) {
  if(user.role!=='admin' && session.opened_by!==user.id) fail(403,'No puedes acceder a una caja ajena.');
  return session;
 }
-export function totals(db,sessionId) {
- const rows=db.prepare('SELECT p.method,p.platform_id,p.platform_name,SUM(p.amount_cents) AS amount FROM payments p JOIN sales s ON s.id=p.sale_id WHERE s.session_id=? GROUP BY p.method,p.platform_id,p.platform_name').all(sessionId);
+export function totals(db,sessionId,day=null) {
+ const scope=day?' AND s.created_at>=? AND s.created_at<?':'';const params=day?[sessionId,day.start,day.end]:[sessionId];
+ const rows=db.prepare(`SELECT p.method,p.platform_id,p.platform_name,SUM(p.amount_cents) AS amount FROM payments p JOIN sales s ON s.id=p.sale_id WHERE s.session_id=?${scope} GROUP BY p.method,p.platform_id,p.platform_name`).all(...params);
  const cash=rows.filter(r=>r.method==='cash').reduce((a,r)=>a+r.amount,0);
  const electronic=rows.filter(r=>r.method==='electronic').reduce((a,r)=>a+r.amount,0);
- const count=db.prepare('SELECT COUNT(*) AS n FROM sales WHERE session_id=?').get(sessionId).n;
+ const count=db.prepare(`SELECT COUNT(*) AS n FROM sales s WHERE session_id=?${scope}`).get(...params).n;
  return {cash_cents:cash,electronic_cents:electronic,total_cents:cash+electronic,sale_count:count,platforms:rows.filter(r=>r.method==='electronic')};
 }
 export function saleDetail(db,user,saleId) {
  const sale=db.prepare('SELECT * FROM sales WHERE id=?').get(saleId);
  if(!sale) fail(404,'Venta no encontrada.');
  if(user.role!=='admin' && sale.seller_id!==user.id) fail(403,'No puedes consultar una venta ajena.');
+ if(!canReadSale(user,sale)) fail(403,'Solo puedes consultar las ventas del día actual');
+ return readSale(db,sale);
+}
+// Uso interno tras escribir una venta; no es una ruta de consulta.
+function readSale(db,sale) {
+ const saleId=sale.id;
  return {...sale,session_number:sessionNumber(db,sale.session_id),snapshot:JSON.parse(sale.snapshot),items:db.prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid').all(saleId),payments:db.prepare('SELECT * FROM payments WHERE sale_id=?').all(saleId)};
 }
 // Una venta que llega más de 2 minutos después de hecha viene de una ruta sin señal: ya ocurrió y se le entregó
@@ -32,7 +40,7 @@ export function recordSale(db,user,input) {
  return transaction(db,()=>{
   const requestHash=digest(JSON.stringify(input));
   const existing=db.prepare('SELECT id,request_hash FROM sales WHERE seller_id=? AND request_key=?').get(user.id,input.request_key);
-  if(existing) {if(existing.request_hash!==requestHash) fail(409,'Esta referencia ya fue usada para otra venta.');return saleDetail(db,user,existing.id);}
+  if(existing) {if(existing.request_hash!==requestHash) fail(409,'Esta referencia ya fue usada para otra venta.');const sale=db.prepare('SELECT * FROM sales WHERE id=?').get(existing.id);return canReadSale(user,sale)?readSale(db,sale):saleAcknowledgement(sale);}
   const received=Date.now();let created=new Date(received).toISOString(),late=false;
   if(input.sold_at){const t=Date.parse(input.sold_at);if(t<=received+10*60*1000){created=new Date(Math.min(t,received)).toISOString();late=received-t>LATE_SALE_MS;}}
   const alerts=[];
@@ -91,7 +99,7 @@ export function recordSale(db,user,input) {
   db.prepare('INSERT INTO payments VALUES (?,?,?,?,?,?)').run(id(),saleId,input.method,platform?.id||null,platform?.name||null,total);
   audit(db,user.id,'sale.create',saleId,{session_id:session.id,total_cents:total,...(late?{offline:true,sold_at:created}:{})});
   if(alerts.length) audit(db,user.id,'sale.offline_alert',saleId,{number,offline_ref:input.offline_ref||null,alerts});
-  return saleDetail(db,user,saleId);
+  const saved=db.prepare('SELECT * FROM sales WHERE id=?').get(saleId);return canReadSale(user,saved)?readSale(db,saved):saleAcknowledgement(saved);
  });
 }
 export function closureDetail(db,closureId) {
