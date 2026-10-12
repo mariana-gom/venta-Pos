@@ -88,6 +88,7 @@ test('Anulación: caja original, ajustes de cierre, abonos devueltos o reasignad
 test('Rutas: ausencia de asignación, aislamiento, concurrencia, venta sin inventario y movimientos',async()=>{
  const f=await fixture();try{
   const {req,db,product,users,session,customer,route}=f;
+  await req('/products/'+product.id,{name:'Producto',price:'5000',unit:'kg',stock:'20'},'admin',409,'PUT');assert.equal(db.prepare('SELECT unit FROM products WHERE id=?').get(product.id).unit,'unit');
   const other=await req('/cash-sessions',{opening:'0'},'other',201),body={session_id:other.id,customer_id:customer.id,items:[{product_id:product.id,quantity:'1'}],method:'cash',request_key:key()};
   await req('/sales',body,'other',409);
   await req(`/users/${users.other.id}/route`,{route_id:route.id,request_key:key()},'admin',200,'PUT');

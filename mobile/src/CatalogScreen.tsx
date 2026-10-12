@@ -92,7 +92,7 @@ export function CatalogScreen({products, customers, user, run, refresh, busy, in
       {isProducts ? <>
         <View style={{gap: 6}}><Text style={styles.label}>¿Cómo se vende?</Text>
           <Segmented items={[{id: 'unit', name: 'Por unidad'}, {id: 'kg', name: 'Por kilogramo'}]} value={unit} onChange={v => setUnit(v as 'unit' | 'kg')}/>
-          {editing !== 'new' && <Text style={styles.hint}>Si el producto ya tiene ventas, conserva su unidad. Para cambiarla, crea otro producto.</Text>}
+          {editing !== 'new' && <Text style={styles.hint}>Si el producto tiene ventas o movimientos de inventario, conserva su unidad. Para cambiarla, crea otro producto.</Text>}
         </View>
         <Field label="Código único" kind="plain" value={code} onChange={setCode} hint="Conserva los ceros iniciales"/>
         <Field label="Categoría" value={category} onChange={setCategory}/>

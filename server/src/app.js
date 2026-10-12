@@ -56,7 +56,7 @@ export function createApp(db) {
  const saveProduct=(req,res)=>res.json(transaction(db,()=>{
   const p=req.input;const productId=req.params.id||id();const previous=req.params.id?db.prepare('SELECT * FROM products WHERE id=?').get(productId):null;
   if(req.params.id&&!previous) fail(404,'Producto no encontrado.');
-  if(previous && previous.unit!==p.unit && db.prepare('SELECT id FROM sale_items WHERE product_id=?').get(productId)) fail(409,'Un producto con ventas conserva su unidad de medida. Crea otro producto.');
+  if(previous && previous.unit!==p.unit && (db.prepare('SELECT id FROM sale_items WHERE product_id=?').get(productId)||(previous.unit&&db.prepare('SELECT id FROM inventory_movements WHERE product_id=?').get(productId)))) fail(409,'Un producto con ventas o movimientos de inventario conserva su unidad de medida. Crea otro producto.');
   const price=money(p.price);if(price<=0) fail(400,'El precio debe ser mayor a cero.');
   const stock=p.stock===null?null:(scaled(p.stock,3,'Existencias')===0?0:quantity(p.stock,p.unit)); const updated=now();
   const allocated=db.prepare('SELECT COALESCE(SUM(quantity_milli),0) n FROM route_stock WHERE product_id=?').get(productId).n;
