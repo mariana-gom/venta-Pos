@@ -15,8 +15,8 @@ El encabezado muestra una nube con el número de ventas por subir; tocándola se
 | Situación | Qué pasa |
 |---|---|
 | El precio cambió mientras estaba en ruta | Se respeta el precio con que se vendió. Aviso al administrador. |
-| No alcanza el stock | Se acepta; el producto queda en 0. Aviso con la cantidad faltante. |
-| Cliente creado sin señal | Se crea con la venta; si ya existía con el mismo nombre y ciudad, se reutiliza. |
+| No alcanza el stock de la ruta | La sincronización se rechaza y la venta permanece pendiente; el administrador debe conciliar existencias. |
+| Cliente creado sin señal | Se crea con la venta; se reutiliza por identificación, o por nombre y ciudad cuando no tiene identificación. |
 | La caja se cerró antes de subir | La venta entra en la caja abierta actual del vendedor. Si no tiene una abierta, espera a que la abra. Aviso al administrador. |
 
 Las ventas hechas con señal siguen las reglas estrictas de siempre (precio vigente, stock suficiente, caja abierta). Los avisos aparecen en Inicio del administrador (últimos 7 días).
@@ -32,3 +32,7 @@ Sin señal, el comprobante se genera en el celular y se envía al servicio de im
 - Los números provisionales pueden saltar (también se reservan para ventas hechas con señal); el consecutivo oficial siempre es continuo.
 - En la versión web las ventas pendientes se guardan en el navegador; en el celular, en SQLite.
 - Pendiente: prueba en celulares Android reales y con la impresora física.
+
+## Inventario y referencias con la versión nueva
+
+Las reglas vigentes se describen en [Operaciones](OPERACIONES.md). La sincronización requiere referencia electrónica y existencias suficientes en la ruta asignada; ya no admite agotamiento con stock en cero. Antes de cambiar una ruta, sincroniza las ventas pendientes de esa ruta. Las colas anteriores deben sincronizarse antes de actualizar el dispositivo.
