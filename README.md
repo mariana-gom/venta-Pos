@@ -1,6 +1,6 @@
 # DANNY'S POS — Distribuidora & Salsamentaria Danny's
 
-Aplicación Expo/React Native dirigida a Android con API Node 24 y SQLite persistente. Implementa acceso por roles, productos por unidad/kg, clientes, stock opcional, pagos, caja por vendedor, cierres administrativos auditables, historial y PDF térmicos de 80 mm por defecto (58 mm también disponible).
+Aplicación Expo/React Native dirigida a Android con API Node 24 y SQLite persistente. Implementa acceso por roles, productos por unidad/kg, clientes, stock opcional, pagos, caja por vendedor, cierres conjuntos de caja e inventario auditables, historial y PDF térmicos de 80 mm por defecto (58 mm también disponible).
 
 ## Inicio rápido en navegador
 

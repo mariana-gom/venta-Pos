@@ -4,7 +4,7 @@ import {Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import {api} from './api';
 import {deviceId,loadQueue,withQueueLock} from './offline';
-import {Badge, Banner, Button, Card, Choice, Confirm, Divider, Empty, Field, Header, InfoRow, Page, Section, colors, cop, diff, moneyInput, moneyToCents, normalizeMoney, quantityLabel,quantityText,parseQuantity,Sheet,shortDate, signed, styles, time, useBack} from './ui';
+import {Badge, Banner, Button, Card, Choice, Confirm, Divider, Empty, Field, FooterBar, Header, InfoRow, Page, Section, colors, cop, diff, moneyInput, moneyToCents, normalizeMoney, quantityLabel,quantityText,parseQuantity,Sheet,shortDate, signed, styles, time, useBack} from './ui';
 import type {CashSession, Closure, User,ClosingPreview,InventoryClosingItem} from './types';
 import type {Run} from '../App';
 type Props = {queued: number; sessions: CashSession[]; user: User; run: Run; refresh: () => Promise<void>; busy: boolean; onClosure: (closure: Closure) => void; onHistory: (session: string) => void; onSell: () => void};
@@ -46,7 +46,7 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
   async function cancelClose(){await api('/cash-sessions/'+selected!.id+'/cancel-close','POST',{request_key:Crypto.randomUUID()});setSelected(null);await refresh();}
 
   // ── Conciliación y cierre (solo administrador)
-  if (selected) return <Page>
+  if (selected) return <Page footer={<FooterBar><View style={{flex:1}}><Text style={styles.h2}>{preview?.inventory.items.length||0} productos</Text><Text style={styles.small}>{preview?.sync.ready?'Devoluciones listas para revisar':'Esperando sincronización'}</Text></View><Button title="Revisar cierre" icon="clipboard" disabled={!valid||busy} onPress={reviewClose} testID="review-close"/></FooterBar>}>
     <Header eyebrow={`CERRAR ${label(selected).toUpperCase()}`} title="Contar y cerrar" subtitle={`${selected.opener_name} · abierta ${shortDate(selected.opened_at)} ${time(selected.opened_at)}`}/>
     <Card>
       <Text style={styles.sectionTitle}>Lo que dice el sistema</Text>
@@ -86,7 +86,6 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
     </Section>
     <Banner tone={preview?.sync.ready?'green':'yellow'} text={preview?.sync.ready?'Todos los equipos confirmaron sincronización. Puedes revisar y cerrar dinero e inventario.':'Esperando los equipos del vendedor. Deben abrir el POS con internet y subir todas las ventas pendientes.'}/>
     <Button title="Actualizar conciliación" variant="outline" onPress={()=>run(async()=>applyPreview(await api('/cash-sessions/'+selected.id+'/close-preview')))}/>
-    <Button title="Revisar cierre" icon="clipboard" size="lg" disabled={!valid || busy} onPress={reviewClose} testID="review-close"/>
     <Button title="Cancelar preparación de cierre" variant="outline" onPress={()=>run(cancelClose)}/>
     <Confirm visible={review} title="¿Cerrar caja e inventario?" message="Se cerrará la jornada y se devolverá al inventario general únicamente el stock recibido y confirmado." confirmText="Confirmar cierre definitivo" busy={busy} onCancel={() => setReview(false)} onConfirm={() => run(close, 'Caja cerrada')}>
       <Card style={{gap: 6}}>

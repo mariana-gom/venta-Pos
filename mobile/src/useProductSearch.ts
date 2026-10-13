@@ -6,9 +6,9 @@ type Page={products:Product[];has_more:boolean;total:number;page:number};
 const EMPTY:Record<string,number>={};
 export function useProductSearch(catalog:Product[],query:string,purpose:'sale'|'assignment',routeId?:string,enabled=true,reserved:Record<string,number>=EMPTY){
  const [online,setOnline]=useState(isOnline()),[rows,setRows]=useState<Product[]>([]),[page,setPage]=useState(1),[more,setMore]=useState(false),[loading,setLoading]=useState(false),[error,setError]=useState(''),[retry,setRetry]=useState(0);
- const generation=useRef(0),cursor=useRef({query,routeId,online,purpose});
+ const generation=useRef(0);
  useEffect(()=>onConnectivity(setOnline),[]);
- useEffect(()=>{cursor.current={query,routeId,online,purpose};setPage(1);setRows([]);},[query,routeId,online,purpose]);
+ useEffect(()=>{setPage(1);setRows([]);},[query,routeId,online,purpose]);
  useEffect(()=>{
   const stamp=++generation.current;if(!enabled){setLoading(false);return;}
   const reset=page===1;setLoading(true);setError('');
