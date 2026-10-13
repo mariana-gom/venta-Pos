@@ -5,7 +5,7 @@ import {Feather} from '@expo/vector-icons';
 import {api} from './api';
 import {deviceId,loadQueue,withQueueLock} from './offline';
 import {Badge, Banner, Button, Card, Choice, Confirm, Divider, Empty, Field, FooterBar, Header, InfoRow, Page, Section, colors, cop, diff, moneyInput, moneyToCents, normalizeMoney, quantityLabel,quantityText,parseQuantity,Sheet,shortDate, signed, styles, time, useBack} from './ui';
-import type {CashSession, Closure, User,ClosingPreview,InventoryClosingItem} from './types';
+import type {CashSession, Closure, User,ClosingPreview,ClosingSync,InventoryClosingItem} from './types';
 import type {Run} from '../App';
 type Props = {queued: number; sessions: CashSession[]; user: User; run: Run; refresh: () => Promise<void>; busy: boolean; onClosure: (closure: Closure) => void; onHistory: (session: string) => void; onSell: () => void};
 const OPENING_PRESETS = [0, 5000000, 10000000, 20000000];
@@ -18,7 +18,7 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
   function applyPreview(p:ClosingPreview){setPreview(p);setSelected(p.session);setReturns(prev=>Object.fromEntries(p.inventory.items.map(i=>[i.product_id,prev[i.product_id]?.edited?prev[i.product_id]:{quantity:quantityText(i.expected_milli),observation:''}])));}
   useEffect(()=>{if(!selected)return;let live=true;const timer=setInterval(()=>{void api<ClosingPreview>('/cash-sessions/'+selected.id+'/close-preview').then(p=>{if(live&&!closing.current)applyPreview(p);}).catch(()=>{});},2000);return()=>{live=false;clearInterval(timer);};},[selected?.id]);
   const [confirmLegacy,setConfirmLegacy]=useState(false);
-  async function confirmLegacySync(){if(!own)return;await withQueueLock(user.id,async()=>{if((await loadQueue(user.id)).some(e=>e.sale.session_id===own.id))throw new Error('Aún hay ventas pendientes en este equipo. Espera a que se sincronicen.');const device=await deviceId();await api('/cash-sessions/'+own.id+'/device','POST',{device_id:device,pending_count:0});await api('/cash-sessions/'+own.id+'/confirm-legacy-sync','POST',{device_id:device,epoch:own.close_epoch,pending_count:0});});setConfirmLegacy(false);await refresh();}
+  async function confirmLegacySync(){if(!own)return;await withQueueLock(user.id,async()=>{if((await loadQueue(user.id)).some(e=>e.sale.session_id===own.id))throw new Error('Aún hay ventas pendientes en este equipo. Espera a que se sincronicen.');const device=await deviceId();const status=await api<ClosingSync>('/cash-sessions/'+own.id+'/device','POST',{device_id:device,pending_count:0});await api('/cash-sessions/'+own.id+'/confirm-legacy-sync','POST',{device_id:device,epoch:status.epoch,pending_count:0});});setConfirmLegacy(false);await refresh();}
   const admin = user.role === 'admin';
   const own = sessions.find(s => s.opened_by === user.id && s.state === 'open');
   const others = sessions.filter(s => s.state === 'open' && s.id !== own?.id);
@@ -76,6 +76,8 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
       {creditCents!==null&&<DiffLine value={creditDiff}/>}
       <Field label="Observaciones (opcional)" value={notes} onChange={setNotes} multiline placeholder="Ej. Se pagó un domicilio con efectivo de la caja"/>
     </Card>
+    {selected.opened_by===user.id&&preview?.sync.legacy_confirmation_required&&<Button title="Confirmar equipos de versión anterior sincronizados" disabled={busy||queued>0} onPress={()=>setConfirmLegacy(true)}/>}
+    <Confirm visible={confirmLegacy} title="¿Todos tus equipos anteriores están sincronizados?" message="Actualiza y sincroniza todos los equipos usados en tu jornada antes de confirmar." confirmText="Confirmar equipos sincronizados" busy={busy} onCancel={()=>setConfirmLegacy(false)} onConfirm={()=>run(confirmLegacySync)}/>
     <Section title="Inventario de la ruta">
       <Text style={styles.h2}>{preview?.inventory.route_name||'Caja sin ruta'}</Text>
       {preview?.inventory.shared&&<Banner tone="yellow" text={preview.inventory.message||''}/>}
