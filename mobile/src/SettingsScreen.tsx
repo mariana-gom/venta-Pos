@@ -45,6 +45,7 @@ export function SettingsScreen({onAdmin,queued, user, settings, platforms, run, 
       <Text style={[styles.small, {textAlign: 'center'}]}>Comprobantes en papel de {settings.paper_width} mm · Hora de Colombia</Text>
     </Card>
 
+    <Button title="Preparar datos para vender sin internet" icon="download" variant="outline" disabled={busy} onPress={()=>run(refresh,'Catálogo y datos guardados para trabajar sin internet')}/>
     {admin && <>
       <Button title="Créditos y cartera" icon="book-open" variant="secondary" onPress={()=>onAdmin('accounts')} testID="admin-accounts"/>
       <Button title="Rutas" icon="map" variant="secondary" onPress={()=>onAdmin('routes')} testID="admin-routes"/>

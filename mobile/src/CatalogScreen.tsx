@@ -39,7 +39,7 @@ export function CatalogScreen({products, customers, user, run, refresh, busy, in
   const incompleteUnits=importPreview?.rows.some(r=>!r.errors.length&&!r.unit&&!importUnits[r.row]);
   const list = useMemo(() => {
     const q = normalizeSearch(query);
-    if (isProducts) return products.filter(p => (status === 'all' || (status === 'active' ? !!p.active : !p.active)) && (!q || normalizeSearch(p.name).includes(q)));
+    if (isProducts) return products.filter(p => (status === 'all' || (status === 'active' ? !!p.active : !p.active)) && (!q || normalizeSearch(p.name).includes(q))).sort((a,b)=>a.name.localeCompare(b.name,'es',{numeric:true}));
     return customers.filter(c => !q || normalizeSearch(c.name).includes(q) || normalizeSearch(c.city).includes(q) || (c.identification||'').includes(q));
   }, [products, customers, query, status, isProducts]);
   const canCreate = admin || !isProducts;
@@ -48,7 +48,7 @@ export function CatalogScreen({products, customers, user, run, refresh, busy, in
     <Header eyebrow="TU NEGOCIO" title="Catálogo"/>
     <Segmented items={[{id: 'products', name: `Productos (${products.filter(p => p.active).length})`}, {id: 'customers', name: `Clientes (${customers.length})`}]} value={tab} onChange={v => { setTab(v as typeof tab); setQuery(''); setLimit(PAGE); }} testID="catalog-tabs"/>
     <View style={[styles.row, {gap: 8}]}>
-      <View style={{flex: 1}}><SearchBar value={query} onChange={t => { setQuery(t); setLimit(PAGE); }} placeholder={isProducts ? 'Buscar producto' : 'Buscar cliente o ciudad'}/></View>
+      <View style={{flex: 1}}><SearchBar value={query} onChange={t => { setQuery(t); setLimit(PAGE); }} placeholder={isProducts ? 'Buscar producto' : 'Buscar cliente o ciudad'} testID="catalog-search"/></View>
       {canCreate && <Button title="Nuevo" icon="plus" onPress={() => open(null)} testID="catalog-new" style={{paddingHorizontal: 14}}/>}
     </View>
     {isProducts && admin && <Button title="Importar Excel" icon="upload" variant="secondary" disabled={busy} onPress={()=>run(chooseExcel)} testID="import-excel"/>}

@@ -1,3 +1,4 @@
+import * as Crypto from 'expo-crypto';
 // Modo ruta: la app sigue vendiendo sin señal. Guarda en el celular una copia del catálogo y una cola de ventas
 // que se suben solas al recuperar internet. Cada venta conserva su referencia única (request_key), así que los
 // reintentos nunca la duplican en el servidor.
@@ -100,3 +101,14 @@ export async function printLocal(sale: Sale, width: 58 | 80, action: 'print' | '
     await Sharing.shareAsync(uri, {mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Compartir comprobante'});
   } finally { await FileSystem.deleteAsync(uri, {idempotent: true}); }
 }
+
+let devicePromise:Promise<string>|undefined;
+export function deviceId(){return devicePromise??=(async()=>{let value=await read<string>('installation-id');if(!value){value=Crypto.randomUUID();await write('installation-id',value);}return value;})();}
+const queueLocks=new Map<string,Promise<unknown>>();
+export async function withQueueLock<T>(userId:string,fn:()=>Promise<T>):Promise<T>{
+ if(Platform.OS==='web'&&typeof navigator!=='undefined'&&navigator.locks)return navigator.locks.request('pos-queue-'+userId,fn);
+ const previous=queueLocks.get(userId)||Promise.resolve();const result=previous.catch(()=>{}).then(fn);queueLocks.set(userId,result);try{return await result;}finally{if(queueLocks.get(userId)===result)queueLocks.delete(userId);}
+}
+export async function setSessionFreeze(sessionId:string,epoch:number,state:'active'|'preparing'|'closed'){const previous=await read<{epoch:number;state:string}|number>('freeze-'+sessionId);if(previous&&typeof previous==='object'&&previous.epoch>epoch)return false;await write('freeze-'+sessionId,{epoch,state});return true;}
+export async function sessionFreeze(sessionId:string){const value=await read<{epoch:number;state:string}|number>('freeze-'+sessionId);return typeof value==='number'?value:value&&value.state!=='active'?value.epoch||1:null;}
+export const updateQueue=(userId:string,fn:(queue:QueuedSale[])=>QueuedSale[])=>withQueueLock(userId,async()=>{const result=fn(await loadQueue(userId));await saveQueue(userId,result);return result;});

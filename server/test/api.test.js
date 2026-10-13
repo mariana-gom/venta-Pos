@@ -1,3 +1,4 @@
+import {closingInput} from './closing-helper.js';
 import test from 'node:test';
 import {backup} from 'node:sqlite';
 import assert from 'node:assert/strict';
@@ -16,7 +17,7 @@ test('Flujo integral: permisos, stock, conciliación, persistencia e históricos
  const other=await createUser(db,{name:'Otro',username:'other',password:'seller-123456789',role:'seller'});
  const tokens={admin:(await login(db,a.username,'admin-123456789')).token,seller:(await login(db,u.username,'seller-123456789')).token,other:(await login(db,other.username,'seller-123456789')).token};
  let server=createApp(db).listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));let base=`http://127.0.0.1:${server.address().port}`;
- async function request(method,url,body,role='admin',status=200){const r=await fetch(base+'/api'+url,{method,headers:{Authorization:`Bearer ${tokens[role]}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const json=await r.json();assert.equal(r.status,status,JSON.stringify(json));return json;}
+ async function request(method,url,body,role='admin',status=200){if(method==='POST'&&url.endsWith('/close')&&role==='admin')body={...await closingInput(db,base,tokens,url.split('/')[2]),...body};const r=await fetch(base+'/api'+url,{method,headers:{Authorization:`Bearer ${tokens[role]}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const json=await r.json();assert.equal(r.status,status,JSON.stringify(json));return json;}
  try{
   await request('POST','/products',{name:'Denegado',price:'1',unit:'unit'},'seller',403);
   const unit=await request('POST','/products',{name:'Producto unidad',price:'5000',unit:'unit',stock:'1000'},'admin');
@@ -101,7 +102,8 @@ test('Concurrencia: cierre único y ninguna venta posterior al cierre',async()=>
   const c=(await req('/customers',{name:'C',city:'Bogotá'},sellerToken)).data;
   const s=(await req('/cash-sessions',{opening:'0'},sellerToken)).data;
   const body={session_id:s.id,customer_id:c.id,items:[{product_id:p.id,quantity:'1'}],method:'cash',request_key:randomUUID()};
-  const races=await Promise.all([req('/sales',body,sellerToken),req(`/cash-sessions/${s.id}/close`,{declared_cash:'0',declared_electronic:'0'},adminToken),req(`/cash-sessions/${s.id}/close`,{declared_cash:'0',declared_electronic:'0'},adminToken)]);
+  const input=await closingInput(db,base.replace(/\/api$/,''),{admin:adminToken,seller:sellerToken},s.id);
+  const races=await Promise.all([req('/sales',body,sellerToken),req(`/cash-sessions/${s.id}/close`,{...input,request_key:randomUUID(),declared_cash:'0',declared_electronic:'0'},adminToken),req(`/cash-sessions/${s.id}/close`,{...input,request_key:randomUUID(),declared_cash:'0',declared_electronic:'0'},adminToken)]);
   assert.equal(races.slice(1).filter(r=>r.status===201).length,1);assert.equal(races.slice(1).filter(r=>r.status===409).length,1);
   assert.ok([201,409].includes(races[0].status));
   const snapshot=JSON.parse(db.prepare('SELECT snapshot FROM closures').get().snapshot);

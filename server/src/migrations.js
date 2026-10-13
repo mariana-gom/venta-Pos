@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 // Ejecutado una vez al iniciar, antes de aceptar peticiones. Nunca modifica facturas o cierres existentes.
 export function migrateSimpleProducts(db) {
  if(db.prepare('SELECT 1 FROM schema_migrations WHERE version=3').get())return;
@@ -70,4 +71,46 @@ export function migrateOperations(db) {
   if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('La migración encontró referencias inválidas.');
   db.prepare('INSERT INTO schema_migrations VALUES(2,?)').run(new Date().toISOString());db.exec('COMMIT');
  }catch(error){db.exec('ROLLBACK');throw error;}finally{db.exec('PRAGMA foreign_keys=ON');}
+}
+
+export function migrateRouteClosing(db){
+ if(db.prepare('SELECT 1 FROM schema_migrations WHERE version=4').get())return;
+ db.exec('BEGIN IMMEDIATE');try{
+  db.exec(`
+   DROP TRIGGER IF EXISTS session_transition;
+   ALTER TABLE cash_sessions ADD COLUMN route_id TEXT REFERENCES routes(id);
+   ALTER TABLE cash_sessions ADD COLUMN close_state TEXT NOT NULL DEFAULT 'active' CHECK(close_state IN ('active','preparing'));
+   ALTER TABLE cash_sessions ADD COLUMN close_epoch INTEGER NOT NULL DEFAULT 0;
+   UPDATE cash_sessions SET route_id=(SELECT route_id FROM users WHERE id=cash_sessions.opened_by) WHERE state='open';
+   CREATE TABLE route_journeys(id TEXT PRIMARY KEY,route_id TEXT NOT NULL REFERENCES routes(id),session_id TEXT REFERENCES cash_sessions(id),opened_at TEXT NOT NULL,start_movement_rowid INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('open','closed')),closed_at TEXT);
+   CREATE UNIQUE INDEX one_route_journey ON route_journeys(route_id) WHERE state='open';
+   CREATE TABLE route_journey_opening(journey_id TEXT NOT NULL REFERENCES route_journeys(id),product_id TEXT NOT NULL REFERENCES products(id),quantity_milli INTEGER NOT NULL CHECK(quantity_milli>=0),PRIMARY KEY(journey_id,product_id));
+   CREATE TABLE route_stock_closures(closure_id TEXT PRIMARY KEY REFERENCES closures(id),journey_id TEXT NOT NULL UNIQUE REFERENCES route_journeys(id),route_id TEXT NOT NULL REFERENCES routes(id),actor_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,detail TEXT NOT NULL);
+   ALTER TABLE inventory_movements ADD COLUMN closure_id TEXT REFERENCES closures(id);
+   CREATE TABLE session_devices(session_id TEXT NOT NULL REFERENCES cash_sessions(id),device_id TEXT NOT NULL,ack_epoch INTEGER,pending_count INTEGER NOT NULL CHECK(pending_count>=0),last_seen TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(session_id,device_id));
+   INSERT INTO session_devices SELECT id,'legacy',NULL,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),opened_by FROM cash_sessions WHERE state='open';
+   CREATE TRIGGER session_transition BEFORE UPDATE ON cash_sessions BEGIN
+    SELECT CASE WHEN OLD.state!='open' OR NEW.id!=OLD.id OR NEW.opened_by!=OLD.opened_by OR NEW.opened_at!=OLD.opened_at OR NEW.opening_cents!=OLD.opening_cents
+    OR (NEW.state='open' AND NEW.closed_at IS NOT NULL)
+    OR (NEW.state='closed' AND (NEW.closed_at IS NULL OR NOT EXISTS(SELECT 1 FROM closures WHERE session_id=OLD.id)))
+    OR (OLD.route_id IS NOT NULL AND NEW.route_id IS NOT OLD.route_id)
+    OR NEW.close_epoch<OLD.close_epoch OR NEW.close_epoch>OLD.close_epoch+1
+    THEN RAISE(ABORT,'Transición de caja inválida') END;
+   END;
+   INSERT INTO schema_migrations VALUES(4,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  `);
+  // Reconstruye la jornada de las cajas abiertas y conserva sobrantes anteriores como apertura, sin modificar movimientos.
+  const stamp=new Date().toISOString(),latestMovement=db.prepare('SELECT COALESCE(MAX(rowid),0) n FROM inventory_movements').get().n;
+  for(const r of db.prepare("SELECT id FROM routes WHERE EXISTS(SELECT 1 FROM route_stock WHERE route_id=routes.id)").all()){
+   const jid=randomUUID(),sessions=db.prepare("SELECT id,opened_at FROM cash_sessions WHERE route_id=? AND state='open' ORDER BY opened_at").all(r.id);
+   const opened=sessions[0]?.opened_at||stamp,start=sessions.length?db.prepare('SELECT COALESCE(MAX(rowid),0) n FROM inventory_movements WHERE created_at<?').get(opened).n:latestMovement;
+   db.prepare('INSERT INTO route_journeys VALUES(?,?,?,?,?,?,?)').run(jid,r.id,sessions.length===1?sessions[0].id:null,opened,start,'open',null);
+   for(const stock of db.prepare('SELECT * FROM route_stock WHERE route_id=?').all(r.id)){
+    const changes=db.prepare('SELECT COALESCE(SUM(quantity_milli),0) n FROM inventory_movements WHERE route_id=? AND product_id=? AND rowid>?').get(r.id,stock.product_id,start).n;
+    const opening=stock.quantity_milli-changes;if(opening<0)throw new Error('No se puede reconstruir la apertura del stock de esta ruta.');
+    db.prepare('INSERT INTO route_journey_opening VALUES(?,?,?)').run(jid,stock.product_id,opening);
+   }
+  }
+  if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Referencias inválidas en migración de cierre de ruta.');db.exec('COMMIT');
+ }catch(e){db.exec('ROLLBACK');throw e;}
 }

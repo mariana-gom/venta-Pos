@@ -158,8 +158,9 @@ export function Banner({tone = 'red', title, text, detail, onClose, action, onAc
     {onClose && <Pressable accessibilityRole="button" accessibilityLabel="Cerrar aviso" hitSlop={10} onPress={onClose}><Feather name="x" size={18} color={c.fg}/></Pressable>}
   </View>;
 }
-export function Page({children, footer, onRefresh, refreshing = false, testID}: {children: React.ReactNode; footer?: React.ReactNode; onRefresh?: () => void; refreshing?: boolean; testID?: string}) {
+export function Page({children, footer, header, onRefresh, refreshing = false, testID}: {children: React.ReactNode; footer?: React.ReactNode; header?: React.ReactNode; onRefresh?: () => void; refreshing?: boolean; testID?: string}) {
   return <KeyboardAvoidingView style={{flex: 1}} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    {header&&<View style={{paddingHorizontal:16,paddingVertical:8}}>{header}</View>}
     <ScrollView testID={testID} style={{flex: 1}} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}
       refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.green]} tintColor={colors.green}/> : undefined}>{children}</ScrollView>
     {footer}

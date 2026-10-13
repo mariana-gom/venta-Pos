@@ -1,3 +1,4 @@
+import {closingInput} from './closing-helper.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -28,7 +29,7 @@ test('Datos del negocio congelados en la venta y número corto de caja',async()=
  const seller=await createUser(db,{name:'Mariana',username:'seller-s',password:'seller-password-123',role:'seller'});
  const tokens={admin:(await login(db,admin.username,'admin-password-123')).token,seller:(await login(db,seller.username,'seller-password-123')).token};
  const server=createApp(db).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api`;
- async function req(method,path,body,role='admin',status=200){const r=await fetch(base+path,{method,headers:{Authorization:`Bearer ${tokens[role]}`,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});const json=await r.json();assert.equal(r.status,status,JSON.stringify(json));return json;}
+ async function req(method,path,body,role='admin',status=200){if(method==='POST'&&path.endsWith('/close')&&role==='admin')body={...await closingInput(db,base.replace(/\/api$/,''),tokens,path.split('/')[2]),...body};const r=await fetch(base+path,{method,headers:{Authorization:`Bearer ${tokens[role]}`,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});const json=await r.json();assert.equal(r.status,status,JSON.stringify(json));return json;}
  try{
   assert.equal((await req('GET','/settings')).business_name,DEFAULT_BUSINESS_NAME);
   const saved=await req('PUT','/settings',{business_name:DEFAULT_BUSINESS_NAME,paper_width:80,business_nit:'900.123.456-7',business_address:'Calle 10 # 5-20',business_city:'El Rosal',business_phone:'300 123 4567'});

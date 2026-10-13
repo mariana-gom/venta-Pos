@@ -109,6 +109,12 @@ export async function closurePdf(closure,width=58) {
   {rule:'dash'},{pair:['DIFERENCIA TOTAL',signed(s.total_difference_cents)],bold:true},{text:difference(s.total_difference_cents),size:L.small});
  if(s.platforms.length)lines.push({rule:'dash'},{text:'POR PLATAFORMA',bold:true},...s.platforms.map(p=>({pair:[p.platform_name,cop(p.amount)]})));
  if(s.credit_cents!==undefined)lines.push({rule:'dash'},{text:'CRÉDITO Y COBROS DE CARTERA',bold:true},{pair:['Crédito registrado',cop(s.credit_cents)]},{pair:['Crédito reportado',cop(s.declared_credit_cents||0)]},{pair:['Diferencia crédito',signed(s.credit_difference_cents||0)]},{pair:['Cobros cartera efectivo',cop(s.collection_cash_cents||0)]},{pair:['Cobros cartera electrónico',cop(s.collection_electronic_cents||0)]},{pair:['Devoluciones efectivo',cop(s.refund_cash_cents||0)]},{pair:['Devoluciones electrónico',cop(s.refund_electronic_cents||0)]});
+ if(s.inventory?.route_name){
+  const qty=(n,u)=>new Intl.NumberFormat('es-CO',{maximumFractionDigits:3}).format(n/1000)+' '+(u==='kg'?'kg':'und');
+  lines.push({rule:'dash'},{text:'CIERRE DE INVENTARIO',bold:true},{text:s.inventory.route_name,bold:true});
+  if(s.inventory.shared)lines.push({text:s.inventory.message,size:L.small});
+  for(const p of s.inventory.items||[])lines.push({text:p.name,bold:true},{pair:['Cargado + apertura',qty(p.opening_milli+p.loaded_milli,p.unit)]},{pair:['Vendido',qty(p.sold_milli,p.unit)]},{pair:['Esperado',qty(p.expected_milli,p.unit)]},{pair:['Recibido / devuelto',qty(p.received_milli,p.unit)],bold:true},{pair:['Diferencia',qty(p.difference_milli,p.unit)]},...(p.observation?[{text:p.observation,size:L.small}]:[]));
+ }
  if(s.notes)lines.push({rule:'dash'},{text:'Observaciones',bold:true},{text:s.notes});
  lines.push({rule:'dash'},{text:'Valores originales del cierre. Las diferencias se concilian por separado.',size:L.small,align:'center'});
  return build(lines,width,`Cierre ${receiptNumber(closure.number)}`);

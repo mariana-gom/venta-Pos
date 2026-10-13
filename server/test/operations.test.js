@@ -1,3 +1,4 @@
+import {closingInput} from './closing-helper.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -16,7 +17,7 @@ async function fixture(){
  const db=openDatabase(':memory:'),users={},tokens={};
  for(const role of ['admin','seller','other']){users[role]=await createUser(db,{username:role,name:role,password:'password-de-prueba',role:role==='admin'?'admin':'seller'});tokens[role]=(await login(db,role,'password-de-prueba')).token;}
  const server=createApp(db).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}/api`;
- async function req(path,body=null,role='admin',status=200,method=body?'POST':'GET'){
+ async function req(path,body=null,role='admin',status=200,method=body?'POST':'GET'){if(method==='POST'&&path.endsWith('/close')&&role==='admin')body={...await closingInput(db,base.replace(/\/api$/,''),tokens,path.split('/')[2]),...body};
   const r=await fetch(base+path,{method,headers:{Authorization:`Bearer ${tokens[role]}`,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});const isPdf=r.headers.get('content-type')?.includes('application/pdf'),data=isPdf?Buffer.from(await r.arrayBuffer()):await r.json();assert.equal(r.status,status,JSON.stringify(data));return data;
  }
  const product=await req('/products',{name:'Producto',price:'5000',unit:'unit',stock:'20',code:'0007',wholesale_price:'4000'});
@@ -85,7 +86,7 @@ test('Anulación: caja original, ajustes de cierre, abonos devueltos o reasignad
   const route2=await req('/routes',{name:'Ruta Sur',request_key:key()},'admin',201);await req(`/users/${users.seller.id}/route`,{route_id:route2.id,request_key:key()},'admin',200,'PUT');
   await req(`/sales/${historical.id}/cancel`,{reason:'Caja cerrada',request_key:key(),refund:{amount:'5000',method:'electronic',platform_id:'nequi',reference:'000-REFUND',outside_cash_reason:'Transferencia administrativa fuera de caja'}});
   const kept=await req(`/closures/${closure.id}`);assert.equal(JSON.stringify(kept.snapshot),original);assert.equal(kept.adjustments.length,1);assert.equal((await req(`/cash-sessions/${second.id}`)).cash_cents,0);
-  assert.equal(db.prepare('SELECT quantity_milli FROM route_stock WHERE product_id=? AND route_id=?').get(product.id,route.id).quantity_milli,20000);
+  assert.equal(db.prepare('SELECT quantity_milli FROM route_stock WHERE product_id=? AND route_id=?').get(product.id,route.id).quantity_milli,1000);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM sales').get().n,4);
  }finally{await f.close();}
 });
@@ -95,18 +96,18 @@ test('Rutas: ausencia de asignación, aislamiento, concurrencia, venta sin inven
   await req('/products/'+product.id,{name:'Producto',price:'5000',unit:'kg',stock:'20'},'admin',409,'PUT');assert.equal(db.prepare('SELECT unit FROM products WHERE id=?').get(product.id).unit,'unit');
   const other=await req('/cash-sessions',{opening:'0'},'other',201),body={session_id:other.id,customer_id:customer.id,items:[{product_id:product.id,quantity:'1'}],method:'cash',request_key:key()};
   await req('/sales',body,'other',409);
-  await req(`/users/${users.other.id}/route`,{route_id:route.id,request_key:key()},'admin',200,'PUT');
+  await req(`/users/${users.other.id}/route`,{route_id:route.id,request_key:key()},'admin',409,'PUT');
   await req('/inventory',{product_id:product.id,route_id:route.id,quantity:'1',kind:'adjustment',reason:'Conteo físico',request_key:key()});
-  const attempts=await Promise.allSettled([req('/sales',body,'other',201),req('/sales',{...body,session_id:session.id,request_key:key()},'seller',201)]);assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
+  const attempts=await Promise.allSettled([req('/sales',{...body,session_id:session.id},'seller',201),req('/sales',{...body,session_id:session.id,request_key:key()},'seller',201)]);assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
   assert.equal(db.prepare('SELECT quantity_milli FROM route_stock WHERE product_id=? AND route_id=?').get(product.id,route.id).quantity_milli,0);
   assert.equal(db.prepare('SELECT stock_milli FROM products WHERE id=?').get(product.id).stock_milli,0);
   const free=await req('/products',{name:'Sin inventario histórico',price:'1000',unit:'unit'});db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(free.id);await req(`/users/${users.other.id}/route`,{route_id:null,request_key:key()},'admin',200,'PUT');await req('/sales',{...body,items:[{product_id:free.id,quantity:'1'}],request_key:key()},'other',201);
   const newRoute=await req('/routes',{name:'Nueva ruta',request_key:key()},'admin',201);
   await req('/inventory',{product_id:product.id,route_id:null,quantity:'2',kind:'entry',reason:'Entrada central',request_key:key()});
   await req('/inventory',{product_id:product.id,route_id:route.id,quantity:'2',kind:'allocate',reason:'Carga adicional',request_key:key()});
-  await req('/users/'+users.seller.id+'/route',{route_id:newRoute.id,request_key:key()},'admin',200,'PUT');
-  await req('/sales',{...body,session_id:session.id,route_id:route.id,sold_at:new Date(Date.now()-3600000).toISOString(),request_key:key()},'seller',409);
-  await req('/sales',{...body,session_id:session.id,sold_at:new Date(Date.now()-3600000).toISOString(),request_key:key()},'seller',409);
+  await req('/users/'+users.seller.id+'/route',{route_id:newRoute.id,request_key:key()},'admin',409,'PUT');
+  await req('/sales',{...body,session_id:session.id,route_id:newRoute.id,sold_at:new Date(Date.now()-3600000).toISOString(),request_key:key()},'seller',409);
+  await req('/sales',{...body,session_id:session.id,route_id:newRoute.id,sold_at:new Date(Date.now()-3600000).toISOString(),request_key:key()},'seller',409);
   assert.equal(db.prepare('SELECT quantity_milli FROM route_stock WHERE product_id=? AND route_id=?').get(product.id,route.id).quantity_milli,2000);
   await req('/routes',{name:'Ajena',request_key:key()},'seller',403);await req('/inventory',{product_id:product.id,route_id:route.id,quantity:'10',kind:'entry',reason:'Entrada',request_key:key()},'seller',403);
  }finally{await f.close();}

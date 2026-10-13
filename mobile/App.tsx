@@ -1,13 +1,13 @@
 import {StockLoadScreen} from './src/StockLoadScreen';
-import React,{useCallback,useEffect,useRef,useState} from 'react';
+import React,{useCallback,useEffect,useRef,useState,useMemo} from 'react';
 import {StatusBar} from 'expo-status-bar';
 import {Feather} from '@expo/vector-icons';
 import {Text,View,Pressable,StyleSheet,ActivityIndicator,Animated,Platform,useWindowDimensions} from 'react-native';
 import {SafeAreaProvider,SafeAreaView} from 'react-native-safe-area-context';
 import {api,ApiError,clearDocumentCache,forgetSession,onConnectivity,restoreSession,signIn,signOut} from './src/api';
-import {loadCache,loadQueue,loadSynced,saveCache,saveQueue,saveSynced,type QueuedSale} from './src/offline';
+import {loadCache,loadQueue,loadSynced,saveCache,saveQueue,saveSynced,deviceId,updateQueue,withQueueLock,setSessionFreeze,sessionFreeze,type QueuedSale} from './src/offline';
 import {Banner,Logo,ProgressBar,colors,initials,styles,useHardwareBack} from './src/ui';
-import type {User,Product,SellableProduct,Customer,Platform as PayPlatform,Settings,CashSession,Sale,Closure,Tab} from './src/types';
+import type {User,Product,SellableProduct,Customer,Platform as PayPlatform,Settings,CashSession,Sale,Closure,Tab,ClosingSync} from './src/types';
 import {LoginScreen} from './src/LoginScreen';
 import {HomeScreen} from './src/HomeScreen';
 import {SaleScreen} from './src/SaleScreen';
@@ -35,8 +35,8 @@ function Main(){
   if(e instanceof ApiError&&e.status===401&&!e.detail.includes('/auth/login')){await forgetSession();setUser(null);setError({text:'Tu sesión terminó. Ingresa de nuevo para continuar.'});}
  }).finally(()=>setBusy(false));},[notify]);
  const refresh=useCallback(async()=>{
-  const results=await Promise.all([api<Product[]>('/products'),api<Customer[]>('/customers'),api<PayPlatform[]>('/platforms'),api<CashSession[]>('/cash-sessions'),api<Settings>('/settings')]);setProducts(results[0]);setCustomers(results[1]);setPlatforms(results[2]);setSessions(results[3]);setSettings(results[4]);loaded.current=true;
- },[]);
+  const results=await Promise.all([(async()=>{let page=1,items:Product[]=[];while(true){const result=await api<{products:Product[];has_more:boolean}>('/products/catalog-download?page='+page);items.push(...result.products);if(!result.has_more)return items;page++;}})(),api<Customer[]>('/customers'),api<PayPlatform[]>('/platforms'),api<CashSession[]>('/cash-sessions'),api<Settings>('/settings')]);const pending=await loadQueue(user?.id||(await api<User>('/me')).id);setProducts(results[0].map(p=>{const reserved=pending.reduce((n,e)=>n+(e.sale.items?.find(i=>i.id===p.id)?.quantity_milli||0),0);return {...p,stock_milli:p.stock_milli===null?null:Math.max(0,p.stock_milli-reserved),...(p.sale_stock_milli!==undefined?{sale_stock_milli:p.sale_stock_milli===null?null:Math.max(0,p.sale_stock_milli-reserved)}:{})};}));setCustomers(results[1]);setPlatforms(results[2]);setSessions(results[3]);setSettings(results[4]);loaded.current=true;
+ },[user?.id]);
  // Al cambiar de día se purga la información consultable; la cola de escritura sigue intacta para sincronizar.
  useEffect(()=>{
   if(previousDay.current===businessClock.date)return;previousDay.current=businessClock.date;
@@ -60,14 +60,14 @@ function Main(){
    let pending=await loadQueue(user.id);if(!pending.length)return;
    const synced=await loadSynced(user.id);let uploaded=0;
    for(const entry of pending){
-    try{const sale=await api<Sale>('/sales','POST',entry.body);pending=pending.filter(x=>x.key!==entry.key);synced.unshift({provisional:entry.provisional,number:sale.number,id:sale.id,at:new Date().toISOString()});uploaded++;}
+    try{const sale=await api<Sale>('/sales','POST',entry.body);pending=await updateQueue(user.id,list=>list.filter(x=>x.key!==entry.key));synced.unshift({provisional:entry.provisional,number:sale.number,id:sale.id,at:new Date().toISOString()});uploaded++;}
     catch(e){
      if(e instanceof ApiError&&e.status===0){if(manual)setError({text:'Sigues sin señal. Las ventas quedan guardadas en el celular y se subirán solas.'});break;}
      if(e instanceof ApiError&&e.status===401){await forgetSession();setUser(null);setError({text:'Tu sesión venció. Ingresa de nuevo para subir las ventas pendientes; siguen guardadas en el celular.'});break;}
-     pending=pending.map(x=>x.key===entry.key?{...x,error:e instanceof Error?e.message:String(e)}:x);
+     pending=await updateQueue(user.id,list=>list.map(x=>x.key===entry.key?{...x,error:e instanceof Error?e.message:String(e)}:x));
     }
    }
-   await saveQueue(user.id,pending);await saveSynced(user.id,synced);setQueue(pending);
+   pending=await loadQueue(user.id);await saveSynced(user.id,synced);setQueue(pending);
    if(uploaded){notify(`${uploaded} ${uploaded===1?'venta subida':'ventas subidas'} al sistema`);await refresh().catch(()=>undefined);}
   }finally{syncing.current=false;}
  },[user,refresh,notify]);
@@ -76,10 +76,10 @@ function Main(){
  useEffect(()=>{if(!queue.length)return;const t=setInterval(()=>void sync(),20000);return()=>clearInterval(t);},[queue.length,sync]);
  /** Guarda la venta en el celular ANTES de enviarla y descuenta el stock local, para seguir vendiendo en ruta. */
  const enqueue=useCallback(async(entry:QueuedSale)=>{
-  if(!user)return;const next=[...await loadQueue(user.id),entry];await saveQueue(user.id,next);setQueue(next);
+  if(!user)return;const next=await withQueueLock(user.id,async()=>{if(await sessionFreeze(entry.sale.session_id))throw new Error('La jornada está preparando cierre. Sincroniza las ventas guardadas antes de continuar.');const list=await loadQueue(user.id);if(list.some(x=>x.key===entry.key))return list;const pending=[...list,entry];await saveQueue(user.id,pending);return pending;});setQueue(next);
   const items=(entry.sale.items||[]);setProducts(list=>list.map(p=>{const i=items.find(x=>x.id===p.id);return i&&p.stock_milli!==null?{...p,stock_milli:Math.max(0,p.stock_milli-i.quantity_milli)}:p;}));
  },[user]);
- const dequeue=useCallback(async(key:string)=>{if(!user)return;const next=(await loadQueue(user.id)).filter(x=>x.key!==key);await saveQueue(user.id,next);setQueue(next);},[user]);
+ const dequeue=useCallback(async(key:string)=>{if(!user)return;const next=await updateQueue(user.id,list=>list.filter(x=>x.key!==key));setQueue(next);},[user]);
  const addLocalCustomer=useCallback((c:Customer)=>setLocalCustomers(list=>[...list,c]),[]);
  useEffect(()=>{void loadCache().then(c=>{if(c&&user&&c.user.id===user.id)void saveCache({...c,local_customers:localCustomers} as typeof c);});},[localCustomers,user]);
  // Clientes creados en ruta: se muestran hasta que el servidor los confirme con la venta.
@@ -87,6 +87,25 @@ function Main(){
  // Botón atrás de Android: primero cierra hojas/subpantallas, luego vuelve a Inicio y solo entonces sale.
  useHardwareBack(()=>{if(user&&tab!=='home'){setTab('home');return true;}return false;});
  const own=visibleSessions.find(s=>s.opened_by===user?.id&&s.state==='open');
+ const devicePolling=useRef(false);
+ useEffect(()=>{
+  if(!user||!own)return;
+  let live=true;
+  async function pollDevice(){if(devicePolling.current||!live)return;devicePolling.current=true;try{
+   const device=await deviceId(),pending=await loadQueue(user!.id),status=await api<ClosingSync>('/cash-sessions/'+own!.id+'/device','POST',{device_id:device,pending_count:pending.filter(e=>e.sale.session_id===own!.id).length});
+   if(!live)return;
+   if(!await withQueueLock(user!.id,()=>setSessionFreeze(own!.id,status.epoch,status.state)))return;
+   setSessions(list=>list.map(s=>s.id===own!.id?{...s,...status.state==='closed'?{state:'closed' as const}:{close_state:status.state,close_epoch:status.epoch,legacy_sync_required:status.legacy_confirmation_required}}:s));
+   if(status.state==='preparing'){
+    await sync();
+    await withQueueLock(user!.id,async()=>{if((await loadQueue(user!.id)).some(e=>e.sale.session_id===own!.id))return;await api('/cash-sessions/'+own!.id+'/device','POST',{device_id:device,pending_count:0});await api('/cash-sessions/'+own!.id+'/device-ack','POST',{device_id:device,epoch:status.epoch,pending_count:0});});
+   }
+  }catch(e){if(!(e instanceof ApiError&&e.status===0))console.warn('No se pudo confirmar la sincronización de jornada.');}finally{devicePolling.current=false;}}
+  void pollDevice();const timer=setInterval(()=>void pollDevice(),3000);return()=>{live=false;clearInterval(timer);};
+ },[user?.id,own?.id,sync]);
+ const reserved=useMemo(()=>Object.fromEntries(products.map(p=>[p.id,queue.reduce((n,e)=>n+(e.sale.items?.find(i=>i.id===p.id)?.quantity_milli||0),0)])),[queue,products]);
+ const saleProducts=useMemo(()=>products.filter((p):p is SellableProduct=>!!p.active&&p.price_cents!==null&&p.unit!==null).map(p=>user?.role==='admin'?{...p,stock_milli:p.sale_stock_milli??p.stock_milli}:p),[products,user?.role]);
+
  function go(target:Tab){setError(null);setTab(target);}
  function history(selectedSale:Sale|null=null,selectedClosure:Closure|null=null,filter=''){setSale(selectedSale);setClosure(selectedClosure);setSessionFilter(filter);setHistoryVersion(n=>n+1);go('history');}
  function catalog(sub:'products'|'customers'){setCatalogTab(sub);setCatalogVersion(n=>n+1);go('catalog');}
@@ -117,9 +136,10 @@ function Main(){
   <View style={{flex:1}}>
    <ProgressBar active={busy}/>
    {errorBanner}
+   {own?.close_state==='preparing'&&own.legacy_sync_required&&<Banner tone="yellow" text="Hay equipos de la versión anterior por confirmar. Entra a Caja después de sincronizar todos tus equipos."/>}
    {tab==='home'&&<HomeScreen user={user} sessions={visibleSessions} busy={busy} run={run} refresh={refresh} go={go} onHistory={()=>history()} onCatalog={catalog} online={online} queued={visibleQueue.length} queuedTotal={queuedTotal} onSync={()=>run(()=>sync(true))}/>}
    {/* Vender permanece montada: el carrito no se pierde al cambiar de pestaña. */}
-   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen businessDate={businessClock.date} user={user} settings={settings} active={tab==='sale'} session={own} products={products.filter((p):p is SellableProduct=>!!p.active&&p.price_cents!==null&&p.unit!==null)} customers={allCustomers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')} enqueue={enqueue} dequeue={dequeue} onLocalCustomer={addLocalCustomer}/></View>
+   <View style={{flex:tab==='sale'?1:0,display:tab==='sale'?'flex':'none'}}><SaleScreen businessDate={businessClock.date} user={user} settings={settings} active={tab==='sale'} session={own} products={saleProducts} reserved={reserved} customers={allCustomers} platforms={platforms} paperWidth={settings.paper_width} refresh={refresh} run={run} busy={busy} onViewSale={s=>history(s)} onOpenCash={()=>go('cash')} enqueue={enqueue} dequeue={dequeue} onLocalCustomer={addLocalCustomer}/></View>
    {tab==='cash'&&<CashScreen key={user.role==='seller'?businessClock.date:'admin'} queued={queue.length} sessions={visibleSessions} user={user} refresh={refresh} run={run} busy={busy} onClosure={c=>history(null,c)} onHistory={id=>history(null,null,id)} onSell={()=>go('sale')}/>}
    {tab==='catalog'&&<CatalogScreen key={catalogVersion} initialTab={catalogTab} products={products} customers={allCustomers} user={user} run={run} refresh={refresh} busy={busy}/>}
    {tab==='history'&&<HistoryScreen platforms={platforms} refresh={refresh} businessDate={businessClock.date} key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={allCustomers} sessions={visibleSessions} queue={queue}/>}

@@ -1,7 +1,8 @@
+import {closingStatus,inventoryClosingPreview,ensureJourney} from './route-journey.js';
 import { id, now, audit, transaction } from './db.js';
-import { money, quantity, subtotal } from './money.js';
+import { money, quantity, subtotal, scaled } from './money.js';
 import { digest } from './auth.js';
-import {electronic,inventoryMove} from './operations.js';
+import {electronic,inventoryMove,once} from './operations.js';
 import {canReadSale,saleAcknowledgement} from './sales-access.js';
 export const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 // Número corto y legible de caja (#1, #2…). Las cajas nunca se borran, así que el orden de inserción es estable.
@@ -58,13 +59,11 @@ export function recordSale(db,user,input) {
   const alerts=[];
   let session=sessionFor(db,user,input.session_id);
   if(session.opened_by!==user.id) fail(403,'Solo el propietario puede vender en esta caja.');
-  if(session.state!=='open') {
-   if(!late) fail(409,'La caja está cerrada. Abre una nueva.');
-   // La caja se cerró mientras el celular estaba sin señal: la venta entra en la caja abierta actual del vendedor.
-   const open=db.prepare("SELECT id FROM cash_sessions WHERE opened_by=? AND state='open'").get(user.id);
-   if(!open) fail(409,'La caja de esta venta ya se cerró. Abre una caja nueva para subir las ventas de ruta pendientes.');
-   alerts.push({type:'session_moved',from_session:session.id});session=sessionFor(db,user,open.id);
-  }
+  if(session.state!=='open')fail(409,'La jornada ya está cerrada. Conserva la venta pendiente y solicita conciliación al administrador; no se trasladará a otra caja.');
+  let device=input.device_id&&db.prepare('SELECT * FROM session_devices WHERE session_id=? AND device_id=?').get(session.id,input.device_id);
+  if(session.close_state==='preparing'&&(!device||device.ack_epoch===session.close_epoch))fail(409,'Esta jornada está terminando. Solo se reciben ventas pendientes de equipos aún sin confirmar su sincronización.');
+  if(!input.device_id)db.prepare("INSERT OR IGNORE INTO session_devices VALUES(?,'legacy',NULL,0,?,?)").run(session.id,now(),user.id);
+  else if(!device){db.prepare('INSERT INTO session_devices VALUES(?,?,NULL,0,?,?)').run(session.id,input.device_id,now(),user.id);}
   let customer=db.prepare(`SELECT * FROM customers WHERE id=? ${late?'':'AND active=1'}`).get(input.customer_id);
   // La identidad del cliente es su ID interno, también durante sincronización sin conexión.
   if(!customer&&input.new_customer&&input.new_customer.id===input.customer_id){
@@ -76,7 +75,8 @@ export function recordSale(db,user,input) {
   const pay=electronic(db,input);
   // Se valida la asignación actual del usuario autenticado. La fecha o ruta del navegador no otorgan acceso a otro stock.
   const currentUser=db.prepare('SELECT route_id FROM users WHERE id=? AND active=1').get(user.id);if(!currentUser)fail(403,'Usuario inactivo.');
-  const routeId=currentUser.route_id||null;
+  const routeId=session.route_id||currentUser.route_id||null;
+  if(routeId)ensureJourney(db,routeId,session.id);
   if(routeId&&!db.prepare('SELECT id FROM routes WHERE id=? AND active=1').get(routeId))fail(409,'La ruta asignada está inactiva. Solicita al administrador revisarla.');
   if(input.route_id!==undefined&&input.route_id!==routeId)fail(409,'La ruta de la venta no coincide con la asignación actual del vendedor. Conserva la venta pendiente y solicita revisar la ruta original.');
   const seen=new Set();
@@ -120,9 +120,20 @@ export function closureDetail(db,closureId) {
 }
 export function closeSession(db,user,sessionId,input) {
  if(user.role!=='admin') fail(403,'Solo el administrador puede cerrar la caja.');
- return transaction(db,()=>{
+ const perform=()=>{
   const session=sessionFor(db,user,sessionId);
   if(session.state!=='open') fail(409,'La caja ya está cerrada. Consulta su cierre en el historial.');
+  const sync=closingStatus(db,session);if(!sync.ready||input.close_epoch!==session.close_epoch)fail(409,'Falta confirmar sincronización en todos los equipos del vendedor. No se puede cerrar definitivamente.');
+  const inventory=inventoryClosingPreview(db,session);
+  if(input.inventory_revision!==inventory.revision)fail(409,'El inventario cambió. Actualiza la conciliación y revisa las devoluciones.');
+  const returns=input.returns||[],seen=new Set();
+  if(returns.length!==inventory.items.length)fail(400,'Revisa la devolución de todos los productos.');
+  const inventoryItems=inventory.items.map(p=>{
+   const entry=returns.find(r=>r.product_id===p.product_id);if(!entry||seen.has(entry.product_id))fail(400,'Productos devueltos inválidos o duplicados.');seen.add(entry.product_id);
+   const received=scaled(entry.quantity,3,'Devolución'),difference=received-p.expected_milli;if(p.unit==='unit'&&received%1000)fail(400,'Las unidades devueltas deben ser enteras.');
+   if(difference&&!entry.observation?.trim())fail(400,'Escribe una observación para la diferencia de '+p.name);
+   return {...p,received_milli:received,difference_milli:difference,observation:entry.observation||''};
+  });
   const computed=totals(db,session.id);
   if(input.reviewed_sale_count!==undefined && input.reviewed_sale_count!==computed.sale_count) fail(409,'Se registraron ventas después de revisar la caja. Cancela y vuelve a abrir la conciliación con los totales actualizados.');
   if(input.reviewed_revision&&input.reviewed_revision!==computed.session_revision)fail(409,'Entró un movimiento después de revisar la caja. Reabre la conciliación.');
@@ -134,10 +145,22 @@ export function closeSession(db,user,sessionId,input) {
    opened_at:session.opened_at,closed_at:created,opened_by:session.opened_by,opener_name:session.opener_name,admin_name:user.name,
    opening_cents:session.opening_cents,...computed,expected_cash_cents:expectedCash,declared_cash_cents:declaredCash,declared_electronic_cents:declaredElectronic,declared_credit_cents:declaredCredit,credit_difference_cents:declaredCredit-computed.credit_cents,
    cash_difference_cents:declaredCash-expectedCash,electronic_difference_cents:declaredElectronic-computed.electronic_cents,
-   total_difference_cents:declaredCash-expectedCash+declaredElectronic-computed.electronic_cents,notes:input.notes};
+   total_difference_cents:declaredCash-expectedCash+declaredElectronic-computed.electronic_cents,notes:input.notes,inventory:{...inventory,items:inventoryItems},sync_epoch:session.close_epoch};
   db.prepare('INSERT INTO closures VALUES (?,?,?,?,?,?)').run(closureId,number,session.id,user.id,created,JSON.stringify(snapshot));
+  if(inventory.journey_id){
+   for(const p of inventoryItems){
+    const common={product_id:p.product_id,actor_id:user.id,closure_id:closureId,request_key:input.request_key,reason:p.observation||'Devolución confirmada en cierre #'+number};
+    // Reconcilia la existencia física y retorna solo lo recibido. Faltantes no aparecen en el inventario general.
+    if(p.difference_milli)inventoryMove(db,{...common,route_id:inventory.route_id,quantity_milli:p.difference_milli,kind:'adjustment'});
+    if(p.received_milli){inventoryMove(db,{...common,route_id:inventory.route_id,quantity_milli:-p.received_milli,kind:'return'});db.prepare('UPDATE products SET central_stock_enabled=1 WHERE id=?').run(p.product_id);inventoryMove(db,{...common,quantity_milli:p.received_milli,kind:'return'});}
+   }
+   db.prepare('INSERT INTO route_stock_closures VALUES(?,?,?,?,?,?)').run(closureId,inventory.journey_id,inventory.route_id,user.id,created,JSON.stringify(inventoryItems));
+   db.prepare("UPDATE route_journeys SET state='closed',closed_at=? WHERE id=? AND state='open'").run(created,inventory.journey_id);
+  }
   db.prepare("UPDATE cash_sessions SET state='closed',closed_at=? WHERE id=? AND state='open'").run(created,session.id);
   audit(db,user.id,'cash.close',closureId,snapshot);
   return closureDetail(db,closureId);
- });
+ };
+ if(!input.request_key)fail(400,'Referencia de cierre obligatoria.');
+ return once(db,user,'cash-inventory-close',input.request_key,{sessionId,...input},perform);
 }

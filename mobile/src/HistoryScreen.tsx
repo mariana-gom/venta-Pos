@@ -127,6 +127,7 @@ export function HistoryScreen({platforms,refresh,businessDate, user, settings, r
     <BackLink text="Historial de cierres"/>
     {closure.pdf_message && <Banner tone="orange" text={closure.pdf_message}/>}
     <Header eyebrow="CIERRE DE CAJA" title={`Cierre ${receiptNumber(closure.number)}`} subtitle={date(c.closed_at)} right={<Badge text="Definitivo" icon="lock" tone="gray"/>}/>
+    {c.inventory?.items?.length? <Card><Text style={styles.h2}>Inventario cerrado · {c.inventory.route_name}</Text>{c.inventory.items.map(i=><View key={i.product_id}><InfoRow label={i.name+' · Devuelto'} value={quantityLabel(i.received_milli,i.unit)}/><InfoRow label="Diferencia" value={quantityLabel(i.difference_milli,i.unit)}/>{i.observation&&<Text style={styles.small}>{i.observation}</Text>}</View>)}</Card>:null}
     <Card>
       {!!closure.session_number && <InfoRow label="Caja" value={`#${closure.session_number}`}/>}
       <InfoRow label="Abrió" value={c.opener_name}/>

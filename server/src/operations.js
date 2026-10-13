@@ -1,3 +1,4 @@
+import {ensureJourney,routeCanLoad} from './route-journey.js';
 import {id,now,audit,transaction} from './db.js';
 import {money,quantity,scaled} from './money.js';
 import {businessInstant,calendarDay,businessTimeZone} from './sales-access.js';
@@ -67,13 +68,13 @@ export function registerCollection(db,user,input){
   audit(db,user.id,'collection.receive',collectionId,{...input,allocations});return {id:collectionId,allocations,account:account(db,input.customer_id)};
  });
 }
-export function inventoryMove(db,{product_id,route_id=null,quantity_milli,kind,actor_id,reason,sale_id=null,request_key=null,load_id=null,effective_date=null}){
+export function inventoryMove(db,{product_id,route_id=null,quantity_milli,kind,actor_id,reason,sale_id=null,request_key=null,load_id=null,effective_date=null,closure_id=null}){
  const p=db.prepare('SELECT * FROM products WHERE id=?').get(product_id);if(!p||p.stock_milli===null)fail(400,'El producto debe controlar existencias.');
  if(!Number.isSafeInteger(p.stock_milli+quantity_milli)||p.stock_milli+quantity_milli<0||p.stock_milli+quantity_milli>100_000_000_000)fail(409,'Existencias totales fuera de rango.');
- if(route_id){if(!db.prepare('SELECT id FROM routes WHERE id=?').get(route_id))fail(404,'Ruta no encontrada.');db.prepare('INSERT OR IGNORE INTO route_stock VALUES(?,?,0)').run(product_id,route_id);const changed=db.prepare('UPDATE route_stock SET quantity_milli=quantity_milli+? WHERE product_id=? AND route_id=? AND quantity_milli+?>=0').run(quantity_milli,product_id,route_id,quantity_milli);if(!changed.changes)fail(409,'Existencias insuficientes en la ruta.');}
+ if(route_id){ensureJourney(db,route_id);if(!db.prepare('SELECT id FROM routes WHERE id=?').get(route_id))fail(404,'Ruta no encontrada.');db.prepare('INSERT OR IGNORE INTO route_stock VALUES(?,?,0)').run(product_id,route_id);const changed=db.prepare('UPDATE route_stock SET quantity_milli=quantity_milli+? WHERE product_id=? AND route_id=? AND quantity_milli+?>=0').run(quantity_milli,product_id,route_id,quantity_milli);if(!changed.changes)fail(409,'Existencias insuficientes en la ruta.');}
  else{db.prepare('INSERT OR IGNORE INTO unassigned_stock VALUES(?,0)').run(product_id);if(!db.prepare('UPDATE unassigned_stock SET quantity_milli=quantity_milli+? WHERE product_id=? AND quantity_milli+?>=0').run(quantity_milli,product_id,quantity_milli).changes)fail(409,'Saldo sin asignar insuficiente.');}
  db.prepare('UPDATE products SET stock_milli=stock_milli+?,updated_at=? WHERE id=?').run(quantity_milli,now(),product_id);
- db.prepare('INSERT INTO inventory_movements(id,product_id,route_id,quantity_milli,kind,actor_id,created_at,reason,sale_id,request_key,load_id,effective_date) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id(),product_id,route_id,quantity_milli,kind,actor_id,now(),reason,sale_id,request_key,load_id,effective_date);
+ db.prepare('INSERT INTO inventory_movements(id,product_id,route_id,quantity_milli,kind,actor_id,created_at,reason,sale_id,request_key,load_id,effective_date,closure_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id(),product_id,route_id,quantity_milli,kind,actor_id,now(),reason,sale_id,request_key,load_id,effective_date,closure_id);
 }
 export function adjustStock(db,user,input){
  return once(db,user,'stock',input.request_key,input,()=>{
@@ -81,6 +82,7 @@ export function adjustStock(db,user,input){
   if(input.route_id&&!db.prepare('SELECT id FROM routes WHERE id=? AND active=1').get(input.route_id))fail(400,'Selecciona una ruta activa.');
   if(input.kind==='entry'&&input.route_id&&p.central_stock_enabled)fail(400,'Este producto tiene inventario central. Utiliza Carga de stock por ruta.');
   if(!input.route_id&&(input.kind==='entry'||input.kind==='adjustment'))db.prepare('UPDATE products SET central_stock_enabled=1 WHERE id=?').run(p.id);
+  if(input.route_id)routeCanLoad(db,input.route_id);
   const amount=scaled(input.quantity,3);if(p.unit==='unit'&&amount%1000)fail(400,'Solo unidades enteras.');
   if(input.kind==='return'){if(!input.route_id||amount<=0)fail(400,'Selecciona ruta y cantidad a devolver.');inventoryMove(db,{...input,quantity_milli:-amount,kind:'return',actor_id:user.id});if(p.central_stock_enabled)inventoryMove(db,{...input,route_id:null,quantity_milli:amount,kind:'return',actor_id:user.id});}
   else if(input.kind==='allocate'){if(!input.route_id||amount<=0)fail(400,'Selecciona ruta y cantidad positiva.');inventoryMove(db,{...input,route_id:null,quantity_milli:-amount,kind:'allocation',actor_id:user.id});inventoryMove(db,{...input,quantity_milli:amount,kind:'allocation',actor_id:user.id});}
@@ -91,6 +93,7 @@ export function adjustStock(db,user,input){
 export function loadRouteStock(db,user,input){
  return once(db,user,'stock-load',input.request_key,input,()=>{
   if(!db.prepare('SELECT id FROM routes WHERE id=? AND active=1').get(input.route_id))fail(400,'Selecciona una ruta activa.');
+  routeCanLoad(db,input.route_id);ensureJourney(db,input.route_id);
   const seen=new Set(),items=[];
   for(const item of input.items){
    if(seen.has(item.product_id))fail(400,'Producto duplicado en la carga.');seen.add(item.product_id);

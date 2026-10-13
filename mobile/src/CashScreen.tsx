@@ -1,9 +1,11 @@
-import React, {useEffect, useState} from 'react';
+import * as Crypto from 'expo-crypto';
+import React, {useEffect, useState,useRef} from 'react';
 import {Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import {api} from './api';
-import {Badge, Banner, Button, Card, Choice, Confirm, Divider, Empty, Field, Header, InfoRow, Page, Section, colors, cop, diff, moneyInput, moneyToCents, normalizeMoney, shortDate, signed, styles, time, useBack} from './ui';
-import type {CashSession, Closure, User} from './types';
+import {deviceId,loadQueue,withQueueLock} from './offline';
+import {Badge, Banner, Button, Card, Choice, Confirm, Divider, Empty, Field, Header, InfoRow, Page, Section, colors, cop, diff, moneyInput, moneyToCents, normalizeMoney, quantityLabel,quantityText,parseQuantity,Sheet,shortDate, signed, styles, time, useBack} from './ui';
+import type {CashSession, Closure, User,ClosingPreview,InventoryClosingItem} from './types';
 import type {Run} from '../App';
 type Props = {queued: number; sessions: CashSession[]; user: User; run: Run; refresh: () => Promise<void>; busy: boolean; onClosure: (closure: Closure) => void; onHistory: (session: string) => void; onSell: () => void};
 const OPENING_PRESETS = [0, 5000000, 10000000, 20000000];
@@ -11,6 +13,12 @@ const label = (s: CashSession) => `Caja${s.number ? ` #${s.number}` : ''}`;
 
 export function CashScreen({queued, sessions, user, run, refresh, busy, onClosure, onHistory, onSell}: Props) {
   const [opening, setOpening] = useState(''), [selected, setSelected] = useState<CashSession | null>(null), [cash, setCash] = useState(''), [electronic, setElectronic] = useState(''), [notes, setNotes] = useState(''),[credit,setCredit]=useState('0'), [review, setReview] = useState(false), [showClosed, setShowClosed] = useState(8), [now, setNow] = useState(new Date());
+  const [preview,setPreview]=useState<ClosingPreview|null>(null),[returns,setReturns]=useState<Record<string,{quantity:string;observation:string;edited?:boolean}>>({}),[editingReturn,setEditingReturn]=useState<InventoryClosingItem|null>(null),[returnQuantity,setReturnQuantity]=useState(''),[returnObservation,setReturnObservation]=useState(''),[closeKey,setCloseKey]=useState(''),[closeBody,setCloseBody]=useState<Record<string,unknown>|null>(null);
+  const closing=useRef(false);
+  function applyPreview(p:ClosingPreview){setPreview(p);setSelected(p.session);setReturns(prev=>Object.fromEntries(p.inventory.items.map(i=>[i.product_id,prev[i.product_id]?.edited?prev[i.product_id]:{quantity:quantityText(i.expected_milli),observation:''}])));}
+  useEffect(()=>{if(!selected)return;let live=true;const timer=setInterval(()=>{void api<ClosingPreview>('/cash-sessions/'+selected.id+'/close-preview').then(p=>{if(live&&!closing.current)applyPreview(p);}).catch(()=>{});},2000);return()=>{live=false;clearInterval(timer);};},[selected?.id]);
+  const [confirmLegacy,setConfirmLegacy]=useState(false);
+  async function confirmLegacySync(){if(!own)return;await withQueueLock(user.id,async()=>{if((await loadQueue(user.id)).some(e=>e.sale.session_id===own.id))throw new Error('Aún hay ventas pendientes en este equipo. Espera a que se sincronicen.');const device=await deviceId();await api('/cash-sessions/'+own.id+'/device','POST',{device_id:device,pending_count:0});await api('/cash-sessions/'+own.id+'/confirm-legacy-sync','POST',{device_id:device,epoch:own.close_epoch,pending_count:0});});setConfirmLegacy(false);await refresh();}
   const admin = user.role === 'admin';
   const own = sessions.find(s => s.opened_by === user.id && s.state === 'open');
   const others = sessions.filter(s => s.state === 'open' && s.id !== own?.id);
@@ -23,18 +31,19 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
   const cashCents = moneyToCents(cash), elecCents = moneyToCents(electronic);
   const cashDiff = cashCents === null ? 0 : cashCents - expected, elecDiff = elecCents === null ? 0 : elecCents - (selected?.electronic_cents || 0);
   const creditCents=moneyToCents(credit),creditDiff=(creditCents||0)-(selected?.credit_cents||0);
-  const valid = cashCents !== null && elecCents !== null && creditCents!==null;
+  const stockValid=!!preview&&preview.inventory.items.every(i=>{const r=returns[i.product_id];if(!r)return false;const n=r.quantity.replace(',','.')==='0'?0:parseQuantity(r.quantity,i.unit);return n!==null&&(n===i.expected_milli||!!r.observation.trim());});
+  const valid = cashCents !== null && elecCents !== null && creditCents!==null&&stockValid&&!!preview?.sync.ready;
   const openingCents = opening.trim() ? moneyToCents(opening) : 0;
 
   async function startClose(session: CashSession) {
-    const latest = await api<CashSession>(`/cash-sessions/${session.id}`);
-    if (latest.state !== 'open') throw new Error('Esta caja ya fue cerrada. Desliza hacia abajo o toca Actualizar para ver el estado actual.');
-    setSelected({...latest, number: session.number}); setCash(''); setElectronic(''); setNotes(''); setCredit('0'); setReview(false);
+    await api('/cash-sessions/'+session.id+'/prepare-close','POST',{request_key:Crypto.randomUUID()});
+    const latest=await api<ClosingPreview>('/cash-sessions/'+session.id+'/close-preview');
+    if(latest.session.state!=='open')throw new Error('Esta caja ya fue cerrada.');
+    applyPreview(latest);setCash('');setElectronic('');setNotes('');setCredit('0');setReview(false);setCloseKey(Crypto.randomUUID());
   }
-  async function close() {
-    const c = await api<Closure>(`/cash-sessions/${selected!.id}/close`, 'POST', {reviewed_revision:selected!.session_revision,reviewed_sale_count: selected!.sale_count, declared_cash: normalizeMoney(cash), declared_electronic: normalizeMoney(electronic),declared_credit:normalizeMoney(credit), notes});
-    setReview(false); setSelected(null); onClosure(c); await refresh();
-  }
+  function reviewClose(){setCloseBody({request_key:closeKey,close_epoch:preview!.sync.epoch,inventory_revision:preview!.inventory.revision,returns:preview!.inventory.items.map(i=>({product_id:i.product_id,quantity:returns[i.product_id].quantity.replace(',','.'),observation:returns[i.product_id].observation})),reviewed_revision:selected!.session_revision,reviewed_sale_count:selected!.sale_count,declared_cash:normalizeMoney(cash),declared_electronic:normalizeMoney(electronic),declared_credit:normalizeMoney(credit),notes});setReview(true);}
+  async function close(){if(closing.current)return;closing.current=true;try{const c=await api<Closure>(`/cash-sessions/${selected!.id}/close`,'POST',closeBody);setReview(false);setSelected(null);onClosure(c);await refresh();}finally{closing.current=false;}}
+  async function cancelClose(){await api('/cash-sessions/'+selected!.id+'/cancel-close','POST',{request_key:Crypto.randomUUID()});setSelected(null);await refresh();}
 
   // ── Conciliación y cierre (solo administrador)
   if (selected) return <Page>
@@ -67,9 +76,19 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
       {creditCents!==null&&<DiffLine value={creditDiff}/>}
       <Field label="Observaciones (opcional)" value={notes} onChange={setNotes} multiline placeholder="Ej. Se pagó un domicilio con efectivo de la caja"/>
     </Card>
-    <Button title="Revisar cierre" icon="clipboard" size="lg" disabled={!valid || busy} onPress={() => setReview(true)} testID="review-close"/>
-    <Button title="Cancelar" variant="outline" onPress={() => setSelected(null)}/>
-    <Confirm visible={review} title="¿Cerrar la caja definitivamente?" message="El cierre no se puede deshacer. Después solo podrás agregar aclaraciones." confirmText="Confirmar cierre definitivo" busy={busy} onCancel={() => setReview(false)} onConfirm={() => run(close, 'Caja cerrada')}>
+    <Section title="Inventario de la ruta">
+      <Text style={styles.h2}>{preview?.inventory.route_name||'Caja sin ruta'}</Text>
+      {preview?.inventory.shared&&<Banner tone="yellow" text={preview.inventory.message||''}/>}
+      <Text style={styles.small}>Las devoluciones ya están prellenadas. Confirma todas o edita únicamente los productos con diferencias.</Text>
+      {preview?.inventory.items.map(i=>{const r=returns[i.product_id],n=r?.quantity.replace(',','.')==='0'?0:parseQuantity(r?.quantity||'',i.unit);return <Card key={i.product_id}>
+       <Text style={styles.h2}>{i.name}</Text><InfoRow label="Cantidad cargada / disponible al inicio" value={quantityLabel(i.opening_milli+i.loaded_milli,i.unit)}/>{i.opening_milli>0&&<Text style={styles.small}>Incluye saldo de apertura: {quantityLabel(i.opening_milli,i.unit)}</Text>}<InfoRow label="Cantidad vendida" value={quantityLabel(i.sold_milli,i.unit)}/>{i.adjusted_milli!==0&&<InfoRow label="Ajustes anteriores" value={quantityLabel(i.adjusted_milli,i.unit)}/>}<InfoRow label="Debería sobrar" value={quantityLabel(i.expected_milli,i.unit)}/><InfoRow label="Devolución recibida" value={quantityLabel(n||0,i.unit)} strong/><InfoRow label="Diferencia" value={quantityLabel((n||0)-i.expected_milli,i.unit)}/>{r?.observation&&<Text style={styles.small}>{r.observation}</Text>}<Button title={'Editar devolución de '+i.name} variant="outline" onPress={()=>{setEditingReturn(i);setReturnQuantity(r?.quantity||'0');setReturnObservation(r?.observation||'');}}/>
+      </Card>;})}
+    </Section>
+    <Banner tone={preview?.sync.ready?'green':'yellow'} text={preview?.sync.ready?'Todos los equipos confirmaron sincronización. Puedes revisar y cerrar dinero e inventario.':'Esperando los equipos del vendedor. Deben abrir el POS con internet y subir todas las ventas pendientes.'}/>
+    <Button title="Actualizar conciliación" variant="outline" onPress={()=>run(async()=>applyPreview(await api('/cash-sessions/'+selected.id+'/close-preview')))}/>
+    <Button title="Revisar cierre" icon="clipboard" size="lg" disabled={!valid || busy} onPress={reviewClose} testID="review-close"/>
+    <Button title="Cancelar preparación de cierre" variant="outline" onPress={()=>run(cancelClose)}/>
+    <Confirm visible={review} title="¿Cerrar caja e inventario?" message="Se cerrará la jornada y se devolverá al inventario general únicamente el stock recibido y confirmado." confirmText="Confirmar cierre definitivo" busy={busy} onCancel={() => setReview(false)} onConfirm={() => run(close, 'Caja cerrada')}>
       <Card style={{gap: 6}}>
         <InfoRow label="Efectivo" value={signed(cashDiff)} tone={cashDiff === 0 ? 'green' : 'orange'}/>
         <Text style={styles.small}>{diff(cashDiff)}</Text>
@@ -79,8 +98,12 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
         <Divider/>
         <InfoRow label="Diferencia total" value={signed(cashDiff + elecDiff)} strong/>
       </Card>
-      <Text style={styles.small}>El servidor vuelve a sumar las ventas al cerrar. Si entró una venta nueva mientras contabas, te pedirá revisar otra vez. Si el vendedor estuvo en ruta, verifica que su celular no tenga ventas por subir.</Text>
+      <Text style={styles.h2}>Resumen de inventario · {preview?.inventory.route_name||'Sin ruta'}</Text>{preview?.inventory.items.map(i=><InfoRow key={i.product_id} label={i.name} value={quantityLabel(Number(closeBody?.returns?(closeBody.returns as {product_id:string;quantity:string}[]).find(r=>r.product_id===i.product_id)?.quantity||0:0)*1000,i.unit)}/>)}
+      <Text style={styles.small}>El servidor verifica sincronización, dinero y stock nuevamente. Si cambiaron, debes revisar otra vez.</Text>
     </Confirm>
+    <Sheet visible={!!editingReturn} onClose={()=>setEditingReturn(null)} title={editingReturn?.name||'Devolución'} footer={<Button title="Guardar devolución" disabled={!editingReturn||!(returnQuantity.replace(',','.')==='0'||parseQuantity(returnQuantity,editingReturn.unit)!==null)||((returnQuantity.replace(',','.')==='0'?0:parseQuantity(returnQuantity,editingReturn.unit))!==editingReturn.expected_milli&&!returnObservation.trim())} onPress={()=>{setReturns(prev=>({...prev,[editingReturn!.product_id]:{quantity:returnQuantity,observation:returnObservation,edited:true}}));setEditingReturn(null);}}/>}>
+      <Field label="Cantidad realmente recibida" kind={editingReturn?.unit==='kg'?'decimal':'number'} value={returnQuantity} onChange={setReturnQuantity}/><Field label="Observación de la diferencia" value={returnObservation} onChange={setReturnObservation} multiline hint="Obligatoria si difiere de lo esperado."/>
+    </Sheet>
   </Page>;
 
   return <Page onRefresh={() => run(refresh)}>
@@ -98,7 +121,10 @@ export function CashScreen({queued, sessions, user, run, refresh, busy, onClosur
           <Button title="Abrir caja" icon="unlock" size="lg" disabled={busy || openingCents === null} loading={busy} testID="open-cash"
             onPress={() => run(async () => { await api('/cash-sessions', 'POST', {opening: opening.trim() ? normalizeMoney(opening) : '0'}); setOpening(''); await refresh(); }, 'Caja abierta. ¡Buenas ventas!')}/>
         </Card>}
-    {queued > 0 && <Banner tone="yellow" title={`${queued} ${queued === 1 ? 'venta' : 'ventas'} de ruta sin subir`} text="Conéctate a internet antes de que cierren tu caja. Si la cierran antes, las ventas entran en tu próxima caja abierta."/>}
+    {own?.close_state==='preparing'&&own.legacy_sync_required&&<Button title="Confirmar equipos de versión anterior sincronizados" disabled={busy||queued>0} onPress={()=>setConfirmLegacy(true)}/>}
+    <Confirm visible={confirmLegacy} title="¿Todos tus equipos anteriores están sincronizados?" message="Abre y actualiza cada equipo usado en esta jornada. Confirma solo después de subir todas sus ventas guardadas; no se eliminará ninguna venta pendiente." confirmText="Confirmar equipos sincronizados" busy={busy} onCancel={()=>setConfirmLegacy(false)} onConfirm={()=>run(confirmLegacySync)}/>
+    {queued > 0 && <Banner tone="yellow" title={`${queued} ${queued === 1 ? 'venta' : 'ventas'} de ruta sin subir`} text="Conéctate a internet antes de que cierren tu caja. El cierre definitivo queda bloqueado hasta confirmar la sincronización de tus equipos."/>}
+    {own?.close_state==='preparing'&&<Banner tone="yellow" text="Jornada terminando. Mantén el POS abierto con internet hasta sincronizar todas las ventas; luego el administrador podrá cerrar."/>}
     {!admin && own && <Banner tone="gray" text="El cierre de caja lo realiza un administrador: cuenta el efectivo y verifica los pagos electrónicos."/>}
 
     {admin && <Section title={`Otras cajas abiertas (${others.length})`}>

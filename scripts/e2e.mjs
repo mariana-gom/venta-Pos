@@ -58,11 +58,11 @@ try{
  await id('tab-sale').click();await capture('vender-catalogo');
  await id('customer-picker').click();await page.getByRole('button',{name:'Ana, Bogotá'}).click();await expect(id('customer-picker')).toContainText('Ana');
  await id('product-search').fill('pol');await id('add-Pollo').click();await id('quantity-input').fill('125,5');await expect(id('quantity-save')).toContainText('1.506.000');await id('quantity-save').click();
- await page.getByRole('button',{name:'Borrar búsqueda'}).click();for(let i=0;i<3;i++)await id('add-Gaseosa').click();
+ await page.getByRole('button',{name:'Borrar búsqueda'}).click();await id('add-Gaseosa').click();await id('quantity-input').fill('3');await id('quantity-save').click();
  if(!(await total()).includes('1.518.000'))throw new Error('Total esperado $ 1.518.000, obtenido '+await total());
  // Decimales con punto, coma y valores sin error de punto flotante (1,1 kg).
  await id('add-Queso campesino').click();for(const [q,v] of [['0,25','6.000'],['0.5','12.000'],['1,1','26.400'],['2,3','55.200']]){await id('quantity-input').fill(q);await expect(id('quantity-save')).toContainText(v);}await id('quantity-save').click();
- await id('add-Chorizo santarrosano artesanal ahumado extra picante de la casa x 500 g').click();
+ await id('add-Chorizo santarrosano artesanal ahumado extra picante de la casa x 500 g').click();await id('quantity-save').click();
  // Modificación del carrito: sumar, restar, editar y quitar.
  await id('sale-tabs').getByRole('tab',{name:/En la venta/}).click();await capture('vender-carrito');
  await page.getByRole('button',{name:'Sumar Unidades de Gaseosa'}).click();await expect(id('qty-Gaseosa')).toHaveValue('4');await page.getByRole('button',{name:'Restar Unidades de Gaseosa'}).click();await expect(id('qty-Gaseosa')).toHaveValue('3');
@@ -80,7 +80,7 @@ try{
  await id('sale-view-receipt').click();await expect(id('receipt-preview')).toBeVisible();await expect(id('receipt-preview')).toContainText('Venta #0001');await expect(id('receipt-preview')).toContainText('125,5 kg');await expect(id('receipt-preview')).toContainText('No es factura electrónica.');await expect(id('receipt-preview')).toContainText('000-ABC123');await capture('comprobante');
  const download=page.waitForEvent('download');await id('receipt-pdf').click();await(await download).saveAs(join(directory,'sale.pdf'));
  // Segunda venta en efectivo con cálculo de cambio.
- await id('tab-sale').click();await id('customer-picker').click();await page.getByRole('button',{name:'Ana, Bogotá'}).click();await id('add-Gaseosa').click();await id('checkout').click();await page.getByRole('radio',{name:'Efectivo'}).click();
+ await id('tab-sale').click();await id('customer-picker').click();await page.getByRole('button',{name:'Ana, Bogotá'}).click();await id('add-Gaseosa').click();await id('quantity-save').click();await id('checkout').click();await page.getByRole('radio',{name:'Efectivo'}).click();
  await id('cash-received').fill('10.000');await expect(id('cash-change')).toContainText('6.000');await id('confirm-sale').click();await expect(id('sale-done')).toContainText('Cambio para el cliente');
  // Historial con filtros y persistencia tras recarga.
  await id('tab-history').click();await expect(page.getByText('Solo puedes consultar las ventas del día actual')).toBeVisible();for(const label of ['Ayer','7 días','Todo','Rango'])await expect(page.getByRole('button',{name:label,exact:true})).toHaveCount(0);await expect(id('sale-row-1')).toBeVisible();await expect(id('history-total')).toContainText('1.522.000');await capture('historial');
@@ -105,12 +105,13 @@ try{
  const previousToken=await page.evaluate(()=>sessionStorage.getItem('pos-token'));await id('profile-button').click();await capture('perfil-vendedor');await id('logout').click();await page.getByRole('button',{name:'Cerrar sesión'}).last().click();
  await expect(page.getByRole('button',{name:'Entrar'})).toBeVisible();if(await page.evaluate(()=>sessionStorage.getItem('pos-token'))!==null)throw new Error('La sesión local no se eliminó.');
  const revoked=await fetch(origin+'/api/me',{headers:{Authorization:`Bearer ${previousToken}`}});if(revoked.status!==401)throw new Error('El token anterior sigue activo.');
+ await signIn('seller-test');const sellerPage=page;page=await browser.newPage({viewport:{width:390,height:844},acceptDownloads:true});page.on('pageerror',error=>errors.push(error.message));await page.goto(origin);
  // Administrador: datos del comprobante, cierre de caja con diferencias y detalle.
  await signIn('admin-test');await expect(page.getByText('Hola, Administradora')).toBeVisible();
  await id('profile-button').click();await page.getByRole('button',{name:'Datos del negocio'}).click();await page.getByLabel('NIT o identificación (opcional)').fill('900.123.456-7');await page.getByLabel('Ciudad (opcional)').fill('El Rosal');await id('settings-save').click();await expect(page.getByText('NIT 900.123.456-7')).toBeVisible();await capture('perfil-admin');
  await id('tab-cash').click();await capture('caja-admin');await page.getByRole('button',{name:'Cerrar caja'}).click();
  await id('close-cash').fill('78.000');await page.getByRole('button',{name:/Coincide con lo registrado/}).click();await expect(page.getByText('Cuadra exacto').first()).toBeVisible();await capture('caja-cierre');
- await id('review-close').click();await page.getByRole('button',{name:'Confirmar cierre definitivo'}).click();await expect(id('closure-detail')).toBeVisible();await expect(page.getByText('Cierre #0001')).toBeVisible();await capture('cierre');
+ await expect(id('review-close')).toBeEnabled({timeout:15000});await id('review-close').click();await page.getByRole('button',{name:'Confirmar cierre definitivo'}).click();await expect(id('closure-detail')).toBeVisible();await expect(page.getByText('Cierre #0001')).toBeVisible();await capture('cierre');
  await page.getByRole('button',{name:'Ver ventas incluidas'}).click();await expect(id('sale-row-1')).toBeVisible();
  await id('tab-catalog').click();await id('catalog-Gaseosa').click();await expect(id('catalog-stock')).toHaveCount(0);await expect(page.getByLabel('Código único')).toHaveCount(0);await expect(page.getByLabel('Precio mayorista (opcional)')).toHaveCount(0);await capture('catalogo-editar');
  // Permisos y cambio de día con reloj controlado, sobre la misma interfaz exportada.

@@ -1,24 +1,27 @@
+import {useProductSearch} from './useProductSearch';
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {Platform, Pressable, Text, View} from 'react-native';
+import {Platform, Pressable, Text, View, useWindowDimensions} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import * as Crypto from 'expo-crypto';
 import {canDisplaySale} from './businessDay';
 import {api, ApiError, readPending, savePending} from './api';
-import {nextProvisional, printLocal, saleTitle, type QueuedSale} from './offline';
+import {deviceId,nextProvisional, printLocal, saleTitle, type QueuedSale} from './offline';
 import {Badge, Banner, Button, Card, Choice, Empty, Field, FooterBar, IconButton, Loading, Page, SearchBar, Segmented, Sheet, Stepper, colors, cop, fitSize, lineSubtotal, moneyToCents, normalizeSearch, parseQuantity, quantityForApi, quantityLabel, quantityText, receiptNumber, styles, unitLabel, useBack} from './ui';
 import type {CashSession, SellableProduct as Product, Customer, Platform as PayPlatform, CartLine, Sale, SaleAcknowledgement, Settings, User} from './types';
 import type {Run} from '../App';
-type Props = {businessDate: string; user: User; settings: Settings; enqueue: (entry: QueuedSale) => Promise<void>; dequeue: (key: string) => Promise<void>; onLocalCustomer: (c: Customer) => void; active: boolean; session?: CashSession; products: Product[]; customers: Customer[]; platforms: PayPlatform[]; paperWidth: 58 | 80; refresh: () => Promise<void>; run: Run; busy: boolean; onViewSale: (sale: Sale) => void; onOpenCash: () => void};
+type Props = {reserved:Record<string,number>;businessDate: string; user: User; settings: Settings; enqueue: (entry: QueuedSale) => Promise<void>; dequeue: (key: string) => Promise<void>; onLocalCustomer: (c: Customer) => void; active: boolean; session?: CashSession; products: Product[]; customers: Customer[]; platforms: PayPlatform[]; paperWidth: 58 | 80; refresh: () => Promise<void>; run: Run; busy: boolean; onViewSale: (sale: Sale) => void; onOpenCash: () => void};
 type SaleView = 'catalog' | 'cart' | 'pay';
 const KG_PRESETS = ['0,25', '0,5', '1', '1,5', '2', '3'];
 const UNIT_PRESETS = ['1', '2', '3', '6', '12', '24'];
 const PAGE = 30;
 
-export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLocalCustomer, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
+export function SaleScreen({reserved,businessDate, user, settings, enqueue, dequeue, onLocalCustomer, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
   const [cart, setCart] = useState<CartLine[]>([]), [query, setQuery] = useState(''), [limit, setLimit] = useState(PAGE), [view, setView] = useState<SaleView>('catalog');
   const [customer, setCustomer] = useState(''), [pickCustomer, setPickCustomer] = useState(false), [customerSearch, setCustomerSearch] = useState(''), [newCustomer, setNewCustomer] = useState(false), [name, setName] = useState(''), [city, setCity] = useState('');
   const [editing, setEditing] = useState<Product | null>(null), [qtyText, setQtyText] = useState('');
   const [pay, setPay] = useState(''), [reference, setReference] = useState(''), [received, setReceived] = useState('');
+  const {width}=useWindowDimensions(),wide=width>=1000;
+  const search=useProductSearch(products,query,'sale',undefined,active&&view!=='pay',reserved);
   const userId = user.id;
   const [ready, setReady] = useState(false), [done, setDone] = useState<{sale: Sale; change: number | null; offline: boolean} | null>(null);
   useEffect(() => { setDone(current => current && !canDisplaySale(user, current.sale, businessDate, settings.time_zone) ? null : current); }, [businessDate]);
@@ -52,13 +55,10 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
   useEffect(() => { setReference(''); }, [pay]);
   const receivedCents = received.trim() ? moneyToCents(received) : null;
   const receivedError = method === 'cash' && received.trim() ? (receivedCents === null ? 'Escribe un valor válido, por ejemplo 50.000' : receivedCents < total ? `Faltan ${cop(total - receivedCents)}` : null) : null;
-  const valid = !!session && !!customer && linesOk && !!method && !receivedError && (method !== 'electronic' || !!reference.trim());
+  const valid = !!session && session.close_state!=='preparing' && !!customer && linesOk && !!method && !receivedError && (method !== 'electronic' || !!reference.trim());
   const inCart = (id: string) => lines.find(l => l.product.id === id);
 
-  const visible = useMemo(() => {
-    const q = normalizeSearch(query);
-    return products.filter(p => p.active && (!q || normalizeSearch(p.name).includes(q)));
-  }, [products, query]);
+  const visible=search.rows.filter((p):p is Product=>!!p.unit&&p.price_cents!==null);
   const customerMatches = useMemo(() => {
     const q = normalizeSearch(customerSearch);
     return customers.filter(c => !q || normalizeSearch(c.name).includes(q) || normalizeSearch(c.city).includes(q)).slice(0, 40);
@@ -73,11 +73,9 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
     const current = parseQuantity(line.quantity, unit) || 0;
     setLine(line.product, quantityText(Math.max(delta, current + direction * delta)));
   }
-  /** Unidades: un toque suma 1. Peso: abre la hoja para escribir los kilos. */
+  /** Toda selección permite revisar la cantidad antes de agregar. */
   function quickAdd(product: Product) {
-    const line = inCart(product.id);
-    if (product.unit === 'unit') setLine(product, quantityText((line?.milli || 0) + 1000));
-    else openQuantity(product);
+    openQuantity(product);
   }
   function openQuantity(product: Product) {
     const line = inCart(product.id);
@@ -95,7 +93,7 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
     try {
       const key = Crypto.randomUUID(), soldAt = new Date().toISOString(), provisional = await nextProvisional();
       const c = selectedCustomer!, platformName = platforms.find(p => p.id === pay)?.name || null;
-      const body = {session_id: session!.id, customer_id: customer, items: lines.map(l => ({product_id: l.product.id, quantity: quantityForApi(l.milli!), expected_price_cents: l.product.price_cents})), method, platform_id: method === 'electronic' ? pay : null, request_key: key,
+      const body = {device_id:await deviceId(),session_id: session!.id, customer_id: customer, items: lines.map(l => ({product_id: l.product.id, quantity: quantityForApi(l.milli!), expected_price_cents: l.product.price_cents})), method, platform_id: method === 'electronic' ? pay : null, request_key: key,
         reference: method === 'electronic' ? reference.trim() : undefined, route_id: products.find(p=>p.stock_milli!==null)?.route_id ?? undefined, sold_at: soldAt, offline_ref: provisional, ...(c.pending ? {new_customer: {id: c.id, name: c.name, city: c.city}} : {})};
       // Vista local de la venta: permite imprimir el comprobante y verla en el historial aunque no haya señal.
       const preview: Sale = {id: key, number: 0, session_id: session!.id, session_number: session!.number, seller_id: userId, customer_id: c.id, created_at: soldAt, total_cents: total,
@@ -160,7 +158,7 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
           <Text style={styles.small}>{cart.length === 0 ? 'Sin productos' : `${cart.length} ${cart.length === 1 ? 'producto' : 'productos'} · ver`}</Text>
           <Text testID="sale-total" numberOfLines={1} style={[styles.metric, {color: colors.green, fontSize: fitSize(cop(total), 22, 9)}]}>{cop(total)}</Text>
         </Pressable>
-        <Button title="Cobrar" icon="arrow-right" size="lg" style={{flexShrink: 0, paddingHorizontal: 22}} disabled={!linesOk} onPress={() => setView('pay')} testID="checkout"/>
+        <Button title="Continuar al pago" icon="arrow-right" size="lg" style={{flexShrink: 0, paddingHorizontal: 22}} disabled={!linesOk||session.close_state==='preparing'} onPress={() => setView('pay')} testID="checkout"/>
       </FooterBar>;
 
   const customerCard = <Card onPress={() => { setPickCustomer(true); setCustomerSearch(''); setNewCustomer(false); }} testID="customer-picker" style={{paddingVertical: 12}}>
@@ -175,7 +173,8 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
   </Card>;
 
   return <>
-    <Page footer={footer} testID="sale-screen">
+    <Page footer={footer} testID="sale-screen" header={view!=='pay'?<View style={[styles.row,{gap:8}]}><View style={{flex:1}}><SearchBar value={query} onChange={setQuery} placeholder="Buscar producto" testID="product-search"/></View><IconButton icon="refresh-cw" label="Actualizar precios y existencias" onPress={()=>run(refresh,'Precios actualizados')} disabled={busy}/></View>:undefined}>
+      {session.close_state==='preparing'&&<Banner tone="yellow" text="La jornada está preparando cierre. Las ventas pendientes se sincronizan y ya no puedes agregar ventas nuevas."/>}
       {view === 'pay' ? <>
         <Pressable accessibilityRole="button" onPress={() => setView('catalog')} style={[styles.row, {justifyContent: 'flex-start', gap: 6}]} hitSlop={8}><Feather name="arrow-left" size={18} color={colors.green}/><Text style={styles.link}>Seguir agregando productos</Text></Pressable>
         <Text accessibilityRole="header" style={styles.title}>Cobrar</Text>
@@ -215,14 +214,15 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
         {products.some(p=>p.stock_milli!==null&&!p.route_id)&&<Banner tone="yellow" text="Para vender productos con inventario, el administrador debe asignarte una ruta y distribuir sus existencias."/>}
         {customerCard}
         <Segmented items={[{id: 'catalog', name: 'Productos'}, {id: 'cart', name: `En la venta${cart.length ? ` (${cart.length})` : ''}`}]} value={view} onChange={v => setView(v as SaleView)} testID="sale-tabs"/>
-        {view === 'catalog' ? <>
-          <View style={[styles.row, {gap: 8}]}>
-            <View style={{flex: 1}}><SearchBar value={query} onChange={t => { setQuery(t); setLimit(PAGE); }} placeholder="Buscar producto" testID="product-search"/></View>
-            <IconButton icon="refresh-cw" label="Actualizar precios y existencias" onPress={() => run(refresh, 'Precios actualizados')} disabled={busy}/>
-          </View>
-          {visible.length === 0 && <Empty icon="search" title={products.length ? 'Sin resultados' : 'Aún no hay productos'} text={products.length ? `No encontramos “${query}”. Revisa la escritura.` : 'Un administrador debe crear productos en Catálogo.'}/>}
+        <View style={{flexDirection:wide?'row':'column',gap:16,alignItems:wide?'flex-start':'stretch'}}>
+        {(wide||view==='catalog')&&<View style={{flex:wide?1:undefined,minWidth:0,gap:8}}>
+          <Text style={styles.h2}>Resultados de productos</Text>
+          {search.offline&&<Text style={styles.small}>Buscando en el catálogo guardado en este equipo.</Text>}
+          {search.loading&&<Text style={styles.small}>Buscando productos…</Text>}
+          {search.error&&<><Banner text={search.error}/><Button title="Reintentar búsqueda" onPress={search.reload}/></>}
+          {!search.loading&&!search.error&&visible.length === 0 && <Empty icon="search" title={products.length ? 'Sin resultados' : 'Aún no hay productos'} text={products.length ? `No encontramos “${query}”. Revisa la escritura.` : 'Un administrador debe crear productos en Catálogo.'}/>}
           <View style={{gap: 8}}>
-            {visible.slice(0, limit).map(p => {
+            {visible.map(p => {
               const line = inCart(p.id), out = p.stock_milli === 0 || p.stock_milli!==null&&!p.route_id;
               return <Pressable key={p.id} testID={`product-${p.name}`} accessibilityRole="button" accessibilityLabel={`${p.name}, ${cop(p.price_cents)} por ${p.unit === 'kg' ? 'kilogramo' : 'unidad'}`} disabled={out} onPress={() => openQuantity(p)}
                 style={({pressed}) => [{flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 14, borderWidth: line ? 1.5 : 1, borderColor: line ? colors.green : colors.line, paddingVertical: 10, paddingLeft: 14, paddingRight: 8, minHeight: 64}, pressed && {backgroundColor: '#F7FAF7'}, out && {opacity: 0.55}]}>
@@ -238,8 +238,10 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
               </Pressable>;
             })}
           </View>
-          {visible.length > limit && <Button title={`Ver más productos (${visible.length - limit})`} variant="outline" onPress={() => setLimit(limit + PAGE)}/>}
-        </> : <>
+          {search.hasMore&&<Button title="Ver más productos" variant="outline" disabled={search.loading} onPress={search.next}/>}
+        </View>}
+        {(wide||view==='cart')&&<View style={{flex:wide?1:undefined,minWidth:0,gap:8}}>
+          <Text style={styles.h2}>Productos de la venta</Text>
           {lines.length === 0 && <Empty icon="shopping-cart" title="La venta está vacía" text="Busca un producto y tócalo para agregarlo." action="Ver productos" onAction={() => setView('catalog')}/>}
           {lines.map(l => <Card key={l.product.id} style={{gap: 10, paddingVertical: 12}}>
             <View style={[styles.row, {alignItems: 'flex-start'}]}>
@@ -254,7 +256,8 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
             {l.short && <Text style={styles.fieldError}>{!l.product.route_id?'Asigna una ruta antes de vender este producto.':'Solo hay '} {l.product.route_id?quantityLabel(l.product.stock_milli!, l.product.unit)+' disponibles':''}</Text>}
           </Card>)}
           {lines.length > 0 && <Button title="Vaciar venta" icon="x" variant="ghost" onPress={() => setCart([])} style={{alignSelf: 'center'}}/>}
-        </>}
+        </View>}
+        </View>
       </>}
     </Page>
 
