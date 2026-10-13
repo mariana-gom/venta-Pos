@@ -1,10 +1,10 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {Pressable, Switch, Text, View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Crypto from 'expo-crypto';
 import {api,uploadExcel,downloadFile} from './api';
-import {Badge, Button, Choice, Confirm, Empty, Field, Header, Page, SearchBar, Segmented, Sheet, colors, cop, moneyInput, moneyToCents, normalizeMoney, normalizeSearch, parseQuantity, quantityForApi, quantityLabel, quantityText, styles} from './ui';
+import {Badge, Button, Card, Choice, Confirm, Empty, Field, Header, Page, SearchBar, Segmented, Sheet, colors, cop, moneyInput, moneyToCents, normalizeMoney, normalizeSearch, parseQuantity, quantityForApi, quantityLabel, quantityText, styles} from './ui';
 import type {Product, Customer, User, ImportPreview} from './types';
 import type {Run} from '../App';
 type Props = {products: Product[]; customers: Customer[]; user: User; run: Run; refresh: () => Promise<void>; busy: boolean; initialTab?: 'products' | 'customers'};
@@ -13,31 +13,30 @@ const PAGE = 40;
 export function CatalogScreen({products, customers, user, run, refresh, busy, initialTab}: Props) {
   const admin = user.role === 'admin';
   const [tab, setTab] = useState<'products' | 'customers'>(initialTab || (admin ? 'products' : 'customers')), [query, setQuery] = useState(''), [status, setStatus] = useState('active'), [limit, setLimit] = useState(PAGE);
-  const [editing, setEditing] = useState<string | null>(null), [name, setName] = useState(''), [price, setPrice] = useState(''), [unit, setUnit] = useState<'unit' | 'kg'>('unit'), [active, setActive] = useState(true), [tracks, setTracks] = useState(false), [stock, setStock] = useState(''), [city, setCity] = useState('');
-  const [identification,setIdentification]=useState(''),[code,setCode]=useState(''),[category,setCategory]=useState(''),[brand,setBrand]=useState(''),[wholesale,setWholesale]=useState(''),[stockReason,setStockReason]=useState('');
-  const [importPreview,setImportPreview]=useState<ImportPreview|null>(null),[importKey,setImportKey]=useState(''),[reviewedZero,setReviewedZero]=useState<number[]>([]),[confirmImport,setConfirmImport]=useState(false),[importResult,setImportResult]=useState<{id:string;summary:{created:number;updated:number;omitted:number}}|null>(null);
-  async function chooseExcel(){const result=await DocumentPicker.getDocumentAsync({type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',copyToCacheDirectory:true});if(result.canceled)return;setImportResult(null);setReviewedZero([]);setImportPreview(await uploadExcel(result.assets[0].uri));setImportKey(Crypto.randomUUID());}
+  const [editing, setEditing] = useState<string | null>(null), [name, setName] = useState(''), [price, setPrice] = useState(''), [unit, setUnit] = useState<'unit' | 'kg'>('unit'), [active, setActive] = useState(true), [city, setCity] = useState('');
+  const [importUnits,setImportUnits]=useState<Record<number,'unit'|'kg'>>({}),[selectedRows,setSelectedRows]=useState<number[]>([]);
+  const [priceReviews,setPriceReviews]=useState<{id:string;name:string;price_cents:number|null;wholesale_price_cents:number|null}[]>([]),[reviewPrices,setReviewPrices]=useState(false),[chosenPrices,setChosenPrices]=useState<Record<string,string>>({}),[priceKey,setPriceKey]=useState(''),[confirmPrices,setConfirmPrices]=useState(false);
+  async function loadPrices(){if(admin)setPriceReviews(await api('/products/price-migration'));}
+  useEffect(()=>{if(admin)run(loadPrices);},[]);
+  const [importPreview,setImportPreview]=useState<ImportPreview|null>(null),[importKey,setImportKey]=useState(''),[confirmImport,setConfirmImport]=useState(false),[importResult,setImportResult]=useState<{id:string;summary:{created:number;updated:number;omitted:number}}|null>(null);
+  async function chooseExcel(){const result=await DocumentPicker.getDocumentAsync({type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',copyToCacheDirectory:true});if(result.canceled)return;setImportResult(null);setImportUnits({});setSelectedRows([]);setImportPreview(await uploadExcel(result.assets[0].uri));setImportKey(Crypto.randomUUID());}
   const [deactivate, setDeactivate] = useState<{id: string; name: string} | null>(null);
   const isProducts = tab === 'products';
 
   function open(item: Product | Customer | null) {
-    setEditing(item ? item.id : 'new'); setName(item?.name || '');setStockReason('');setIdentification(item&&'city' in item?item.identification||'':'');
-    if (item && 'price_cents' in item) { setCode(item.code||'');setCategory(item.category||'');setBrand(item.brand||'');setWholesale(item.wholesale_price_cents==null?'':moneyInput(item.wholesale_price_cents));setPrice(item.price_cents==null?'':moneyInput(item.price_cents)); setUnit(item.unit||'unit'); setActive(!!item.active); setTracks(item.stock_milli !== null); setStock(item.stock_milli === null ? '' : quantityText(item.stock_milli)); }
-    else {setCode('');setCategory('');setBrand('');setWholesale(''); setPrice(''); setUnit('unit'); setActive(true); setTracks(false); setStock(''); setCity(item && 'city' in item ? item.city : ''); }
+    setEditing(item ? item.id : 'new');setName(item?.name||'');
+    if(item&&'price_cents' in item){setPrice(item.price_cents===null?'':moneyInput(item.price_cents));setUnit(item.unit||'unit');setActive(!!item.active);}
+    else{setPrice('');setUnit('unit');setActive(true);setCity(item&&'city' in item?item.city:'');}
   }
-  const priceCents = moneyToCents(price);
-  // Existencias: 0 es válido (agotado); vacío con control activo no lo es.
-  const stockMilli = stock.trim() === '0' ? 0 : parseQuantity(stock, unit);
-  const errors = isProducts
-    ? {price: price && (priceCents === null || priceCents <= 0) ? 'Escribe un precio válido, por ejemplo 12.000' : null, stock: tracks && stock && stockMilli === null ? (unit === 'unit' ? 'Solo unidades enteras' : 'Usa coma para decimales: 12,5') : null}
-    : {price: null, stock: null};
-  const canSave = isProducts ? !!name.trim() && priceCents !== null && priceCents > 0 && (!tracks || stockMilli !== null) : !!name.trim() && !!city.trim();
-  async function save() {
-    const body = isProducts ? {name: name.trim(), price: normalizeMoney(price), unit, active, stock: tracks ? quantityForApi(stockMilli!) : null,code:code.trim()||null,category:category.trim(),brand:brand.trim(),wholesale_price:wholesale.trim()?normalizeMoney(wholesale):null,reason:stockReason.trim()||undefined} : {name: name.trim(), city: city.trim(),identification:identification.trim()};
-    await api(`/${tab}${editing && editing !== 'new' ? '/' + editing : ''}`, editing === 'new' ? 'POST' : 'PUT', body);
-    setEditing(null); await refresh();
+  const priceCents=moneyToCents(price);
+  const errors={price:price&&(priceCents===null||priceCents<=0)?'Escribe un precio mayor a cero':null};
+  const canSave=isProducts?!!name.trim()&&priceCents!==null&&priceCents>0:!!name.trim()&&!!city.trim();
+  async function save(){
+    const body=isProducts?{name:name.trim(),price:normalizeMoney(price),unit,active}:{name:name.trim(),city:city.trim()};
+    await api(`/${tab}${editing&&editing!=='new'?'/'+editing:''}`,editing==='new'?'POST':'PUT',body);
+    setEditing(null);await refresh();await loadPrices();
   }
-
+  const incompleteUnits=importPreview?.rows.some(r=>!r.errors.length&&!r.unit&&!importUnits[r.row]);
   const list = useMemo(() => {
     const q = normalizeSearch(query);
     if (isProducts) return products.filter(p => (status === 'all' || (status === 'active' ? !!p.active : !p.active)) && (!q || normalizeSearch(p.name).includes(q)));
@@ -53,7 +52,8 @@ export function CatalogScreen({products, customers, user, run, refresh, busy, in
       {canCreate && <Button title="Nuevo" icon="plus" onPress={() => open(null)} testID="catalog-new" style={{paddingHorizontal: 14}}/>}
     </View>
     {isProducts && admin && <Button title="Importar Excel" icon="upload" variant="secondary" disabled={busy} onPress={()=>run(chooseExcel)} testID="import-excel"/>}
-    {importResult && <Text style={styles.body}>Importación: {importResult.summary.created} borradores, {importResult.summary.updated} precios actualizados, {importResult.summary.omitted} filas omitidas.</Text>}
+    {isProducts&&admin&&priceReviews.length>0&&<Button title={`Revisar precio único (${priceReviews.length})`} variant="outline" onPress={()=>{setChosenPrices(Object.fromEntries(priceReviews.map(p=>[p.id,moneyInput(p.wholesale_price_cents&&p.wholesale_price_cents>0?p.wholesale_price_cents:p.price_cents||0)])));setPriceKey(Crypto.randomUUID());setReviewPrices(true);}}/>}
+    {importResult && <Text style={styles.body}>Importación: {importResult.summary.created} productos nuevos, {importResult.summary.updated} precios actualizados, {importResult.summary.omitted} filas omitidas.</Text>}
     {importResult && <Button title="Descargar resumen" icon="download" variant="outline" onPress={()=>run(()=>downloadFile('/products/import/'+importResult.id+'/result','resultado-importacion.csv','text/csv'))}/>}
     {isProducts && admin && <Choice items={[{id: 'active', name: 'Disponibles'}, {id: 'inactive', name: 'Inactivos'}, {id: 'all', name: 'Todos'}]} value={status} onChange={setStatus}/>}
     {list.length === 0 && <Empty icon={isProducts ? 'package' : 'users'} title={query ? 'Sin resultados' : isProducts ? 'Aún no hay productos' : 'Aún no hay clientes'}
@@ -71,7 +71,7 @@ export function CatalogScreen({products, customers, user, run, refresh, busy, in
           <View style={{flex: 1, gap: 3}}>
             <Text numberOfLines={2} style={{fontSize: 15, fontWeight: '700', color: colors.ink}}>{item.name}</Text>
             {p ? <View style={[styles.row, {justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap'}]}>
-              <Text style={[styles.money, {fontSize: 14, color: colors.greenDark}]}>{p.price_cents===null?'Precio normal pendiente':cop(p.price_cents)}<Text style={styles.small}>/{p.unit === 'kg' ? 'kg' : 'und'}</Text></Text>
+              <Text style={[styles.money, {fontSize: 14, color: colors.greenDark}]}>{p.price_cents===null?'Precio pendiente':cop(p.price_cents)}<Text style={styles.small}>/{p.unit === 'kg' ? 'kg' : 'und'}</Text></Text>
               <Text style={[styles.small, p.stock_milli === 0 && {color: colors.red, fontWeight: '700'}]}>{p.stock_milli === null ? 'Sin control de stock' : p.stock_milli === 0 ? 'Agotado' : `Stock: ${quantityLabel(p.stock_milli, p.unit||'unit')}`}</Text>
               {!p.active && <Badge text="Inactivo" tone="gray"/>}
             </View> : <Text style={styles.small}><Feather name="map-pin" size={12}/> {(item as Customer).city}</Text>}
@@ -94,34 +94,39 @@ export function CatalogScreen({products, customers, user, run, refresh, busy, in
           <Segmented items={[{id: 'unit', name: 'Por unidad'}, {id: 'kg', name: 'Por kilogramo'}]} value={unit} onChange={v => setUnit(v as 'unit' | 'kg')}/>
           {editing !== 'new' && <Text style={styles.hint}>Si el producto tiene ventas o movimientos de inventario, conserva su unidad. Para cambiarla, crea otro producto.</Text>}
         </View>
-        <Field label="Código único" kind="plain" value={code} onChange={setCode} hint="Conserva los ceros iniciales"/>
-        <Field label="Categoría" value={category} onChange={setCategory}/>
-        <Field label="Marca" value={brand} onChange={setBrand}/>
-        <Field label="Precio mayorista (opcional)" kind="decimal" prefix="$" value={wholesale} onChange={setWholesale}/>
+        {priceReviews.find(p=>p.id===editing)&&<Text style={styles.body}>Precio anterior: {cop(priceReviews.find(p=>p.id===editing)!.price_cents||0)} · Precio adicional anterior: {cop(priceReviews.find(p=>p.id===editing)!.wholesale_price_cents||0)}. Al guardar, el precio indicado abajo será el único del POS.</Text>}
         <Field label={unit === 'kg' ? 'Precio por kilogramo' : 'Precio por unidad'} kind="decimal" prefix="$" value={price} onChange={setPrice} placeholder="0" error={errors.price} hint={priceCents ? `${cop(priceCents)} por ${unit === 'kg' ? 'kg' : 'unidad'}` : undefined} testID="catalog-price"/>
-        <View style={[styles.row, {paddingVertical: 4}]}>
-          <View style={{flex: 1}}><Text style={styles.label}>Controlar existencias</Text><Text style={styles.hint}>Descuenta automáticamente con cada venta.</Text></View>
-          <Switch accessibilityLabel="Controlar existencias" value={tracks} onValueChange={setTracks} trackColor={{true: colors.green, false: colors.lineStrong}} thumbColor={colors.white}/>
-        </View>
-        {tracks && <Field label={`Existencias en ${unit === 'kg' ? 'kilogramos' : 'unidades'}`} kind={unit === 'kg' ? 'decimal' : 'number'} value={stock} onChange={setStock} placeholder="0" error={errors.stock} testID="catalog-stock" hint="Total global. El cambio afecta el saldo sin asignar; distribuye por ruta desde Rutas e inventario."/>}
-        {editing!=='new' && <Field label="Motivo del ajuste de existencias" value={stockReason} onChange={setStockReason}/>}
         <View style={[styles.row, {paddingVertical: 4}]}>
           <View style={{flex: 1}}><Text style={styles.label}>Disponible para la venta</Text><Text style={styles.hint}>Los inactivos no aparecen en Vender; su historial se conserva.</Text></View>
           <Switch accessibilityLabel="Disponible para la venta" value={active} onValueChange={setActive} trackColor={{true: colors.green, false: colors.lineStrong}} thumbColor={colors.white}/>
         </View>
-      </> : <><Field label="Identificación del cliente" kind="plain" value={identification} onChange={setIdentification} hint="Obligatoria para vender a crédito"/><Field label="Ciudad o municipio" kind="name" value={city} onChange={setCity} placeholder="Ej. El Rosal" testID="catalog-city"/></>}
+      </> : <><Field label="Ciudad o municipio" kind="name" value={city} onChange={setCity} placeholder="Ej. El Rosal" testID="catalog-city"/></>}
     </Sheet>
-    <Sheet visible={!!importPreview} onClose={()=>setImportPreview(null)} title="Vista previa de importación" subtitle={importPreview?importPreview.summary.new+' nuevos · '+importPreview.summary.updates+' actualizaciones · '+importPreview.summary.omitted+' omitidos':''} footer={<Button title="Revisar y confirmar importación" disabled={busy} onPress={()=>setConfirmImport(true)}/>}>
-      <Text style={styles.body}>Solo se importa el precio mayorista. Los nuevos productos quedan inactivos hasta completar precio normal y unidad. Las existencias se conservan.</Text>
+    <Sheet visible={!!importPreview} onClose={()=>setImportPreview(null)} title="Vista previa de importación" subtitle={importPreview?importPreview.summary.new+' nuevos · '+importPreview.summary.updates+' actualizaciones · '+importPreview.summary.omitted+' omitidos':''} footer={<Button title="Revisar y confirmar importación" disabled={busy||!!incompleteUnits} onPress={()=>setConfirmImport(true)}/>}>
+      <Text style={styles.body}>Descripción será el nombre y Precio de venta mayoristas será el único precio del POS. Completa la modalidad cuando falte. Las existencias y las ventas históricas se conservan.</Text>
+      {!importPreview?.unit_column&&<Text style={styles.small}>El archivo no contiene una columna explícita de modalidad.</Text>}
+      <Text style={styles.label}>Aplicar modalidad a {selectedRows.length} filas seleccionadas</Text>
+      <Choice items={[{id:'unit',name:'Por unidad'},{id:'kg',name:'Por kilogramo'}]} value="" onChange={v=>setImportUnits(prev=>({...prev,...Object.fromEntries(selectedRows.map(row=>[row,v]))}))}/>
+      <Button title="Seleccionar filas sin modalidad" variant="outline" onPress={()=>setSelectedRows(importPreview!.rows.filter(r=>!r.errors.length&&!r.unit_locked&&!r.unit).map(r=>r.row))}/>
       {importPreview?.rows.map(r=><View key={r.row} style={{gap:4,paddingVertical:8,borderBottomWidth:1,borderBottomColor:colors.line}}>
         <Text style={styles.h2}>Fila {r.row} · {r.code||'Sin código'} · {r.name}</Text>
-        <Text style={styles.small}>{r.action==='update'?'Actualizar precio':r.action==='create'?'Nuevo borrador':'Omitir'} · {r.previous_price_cents==null?'Sin precio mayorista':cop(r.previous_price_cents)} → {r.new_price_cents==null?'Inválido':cop(r.new_price_cents)}</Text>
+        <Text style={styles.small}>{r.action==='update'?'Actualizar precio':r.action==='create'?'Crear producto':'Omitir'} · {r.previous_price_cents==null?'Sin precio':cop(r.previous_price_cents)} → {r.new_price_cents==null?'Inválido':cop(r.new_price_cents)}</Text>
+        {r.previous_wholesale_cents!=null&&<Text style={styles.small}>Precio adicional anterior: {cop(r.previous_wholesale_cents)}. Precio único después de importar: {cop(r.new_price_cents||0)}.</Text>}
+        {!r.errors.length&&!r.unit_locked&&<>
+          <Switch accessibilityLabel={'Seleccionar fila '+r.row} value={selectedRows.includes(r.row)} onValueChange={v=>setSelectedRows(prev=>v?[...prev,r.row]:prev.filter(n=>n!==r.row))}/>
+          <Choice items={[{id:'unit',name:'Por unidad'},{id:'kg',name:'Por kilogramo'}]} value={importUnits[r.row]||r.unit||''} onChange={v=>setImportUnits(prev=>({...prev,[r.row]:v as 'unit'|'kg'}))}/>
+        </>}
         {r.errors.map(e=><Text key={e} style={styles.fieldError}>{e}</Text>)}
         {r.warnings.map(w=><Text key={w} style={styles.small}>{w}</Text>)}
-        {!r.errors.length&&r.new_price_cents===0&&<Choice items={[{id:'no',name:'Omitir cero'},{id:'yes',name:'He revisado el cero'}]} value={reviewedZero.includes(r.row)?'yes':'no'} onChange={v=>setReviewedZero(list=>v==='yes'?[...list,r.row]:list.filter(n=>n!==r.row))}/>}
+
       </View>)}
     </Sheet>
-    <Confirm visible={confirmImport} title="¿Aplicar la vista previa?" message="Se actualizará únicamente el precio mayorista de las filas válidas y se crearán los borradores nuevos. Las filas con errores se omiten." confirmText="Confirmar importación" busy={busy} onCancel={()=>setConfirmImport(false)} onConfirm={()=>run(async()=>{const result=await api<{id:string;summary:{created:number;updated:number;omitted:number}}>('/products/import/apply','POST',{preview_id:importPreview!.id,request_key:importKey,reviewed_zero_rows:reviewedZero});setImportResult(result);setConfirmImport(false);setImportPreview(null);await refresh();})}/>
+    <Confirm visible={confirmImport} title="¿Aplicar la vista previa?" message="Se guardarán nombre, modalidad y precio único de las filas válidas. Las filas con errores se omiten. No se cambia el inventario ni las facturas históricas." confirmText="Confirmar importación" busy={busy} onCancel={()=>setConfirmImport(false)} onConfirm={()=>run(async()=>{const result=await api<{id:string;summary:{created:number;updated:number;omitted:number}}>('/products/import/apply','POST',{preview_id:importPreview!.id,request_key:importKey,units:Object.entries(importUnits).map(([row,unit])=>({row:Number(row),unit}))});setImportResult(result);setConfirmImport(false);setImportPreview(null);await refresh();await loadPrices();})}/>
+    <Sheet visible={reviewPrices} onClose={()=>setReviewPrices(false)} title="Revisar precio único" footer={<Button title="Revisar migración de precios" disabled={busy||priceReviews.some(p=>!moneyToCents(chosenPrices[p.id]||''))} onPress={()=>setConfirmPrices(true)}/>}>
+      <Text style={styles.body}>Revisa el precio que usará el POS. Hasta confirmar se conserva el precio actual. Las facturas históricas conservan sus precios originales.</Text>
+      {priceReviews.map(p=><Card key={p.id}><Text style={styles.h2}>{p.name}</Text><Text style={styles.small}>Actual: {p.price_cents===null?'Pendiente':cop(p.price_cents)} · Adicional anterior: {p.wholesale_price_cents===null?'Sin precio':cop(p.wholesale_price_cents)}</Text><Field label="Precio único después de migrar" kind="decimal" value={chosenPrices[p.id]||''} onChange={v=>setChosenPrices(prev=>({...prev,[p.id]:v}))}/></Card>)}
+    </Sheet>
+    <Confirm visible={confirmPrices} title="¿Guardar estos precios únicos?" message="El POS usará los precios revisados. El historial de ventas se conserva." confirmText="Confirmar precios" busy={busy} onCancel={()=>setConfirmPrices(false)} onConfirm={()=>run(async()=>{await api('/products/price-migration','POST',{request_key:priceKey,items:priceReviews.map(p=>({product_id:p.id,price:normalizeMoney(chosenPrices[p.id]),expected_price_cents:p.price_cents,expected_wholesale_cents:p.wholesale_price_cents}))});setConfirmPrices(false);setReviewPrices(false);await refresh();await loadPrices();})}/>
     <Confirm visible={!!deactivate} title={`¿Desactivar “${deactivate?.name}”?`} message={isProducts ? 'Dejará de aparecer en Vender. Las ventas anteriores no cambian y puedes reactivarlo después.' : 'Dejará de aparecer en la lista de clientes. Las ventas anteriores conservan su nombre.'}
       confirmText="Desactivar" danger busy={busy} onCancel={() => setDeactivate(null)}
       onConfirm={() => run(async () => { await api(`/${tab}/${deactivate!.id}`, 'DELETE'); setDeactivate(null); setEditing(null); await refresh(); }, 'Desactivado; historial conservado')}/>

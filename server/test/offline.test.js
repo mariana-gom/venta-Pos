@@ -15,6 +15,7 @@ test('Modo ruta: precio respetado, stock por ruta estricto, cliente nuevo, caja 
  const ago=minutes=>new Date(Date.now()-minutes*60000).toISOString();
  try{
   const pollo=await req('POST','/products',{name:'Pollo',price:'12000',unit:'kg',stock:'10'});
+  await req('POST','/inventory',{product_id:pollo.id,route_id:null,quantity:'10',kind:'entry',reason:'Entrada central',request_key:randomUUID()});
   const route=await req('POST','/routes',{name:'Ruta prueba',request_key:randomUUID()},'admin',201);
   await req('PUT','/users/'+seller.id+'/route',{route_id:route.id,request_key:randomUUID()});
   await req('POST','/inventory',{product_id:pollo.id,route_id:route.id,quantity:'10',kind:'allocate',reason:'Distribución inicial',request_key:randomUUID()});
@@ -40,9 +41,9 @@ test('Modo ruta: precio respetado, stock por ruta estricto, cliente nuevo, caja 
   const newId=randomUUID();const withCustomer=body({customer_id:newId,new_customer:{id:newId,name:'Tienda La Esquina',city:'Madrid'},items:[{product_id:pollo.id,quantity:'1',expected_price_cents:1300000}],sold_at:ago(30)});
   const s3=await req('POST','/sales',withCustomer,'seller',201);assert.equal(s3.customer_id,newId);assert.equal(s3.snapshot.customer_name,'Tienda La Esquina');
   await req('POST','/sales',withCustomer,'seller',201);assert.equal((await req('GET','/customers')).filter(c=>c.name==='Tienda La Esquina').length,1);
-  // Un cliente nuevo en ruta igual a uno existente (nombre y ciudad) reutiliza el existente.
+  // Un cliente nuevo en ruta igual a uno existente (nombre y ciudad) conserva un ID distinto y una cuenta separada.
   const dupId=randomUUID();const dup=await req('POST','/sales',body({customer_id:dupId,new_customer:{id:dupId,name:'ana',city:'facatativá'},items:[{product_id:pollo.id,quantity:'1',expected_price_cents:1300000}],sold_at:ago(20)}),'seller',201);
-  assert.equal(dup.customer_id,customer.id);
+  assert.equal(dup.customer_id,dupId);assert.notEqual(dup.customer_id,customer.id);
   // La caja se cerró antes de que el celular subiera: sin caja abierta se rechaza; con una nueva, entra en ella.
   await req('POST',`/cash-sessions/${session.id}/close`,{declared_cash:'0',declared_electronic:'0'},'admin',201);
   const pending=body({items:[{product_id:pollo.id,quantity:'1',expected_price_cents:1300000}],sold_at:ago(15)});

@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { fileURLToPath } from 'node:url';
 import { cop,difference } from './money.js';
-import {dayStart,nextDay,businessTimeZone} from './sales-access.js';
+import {dayStart,nextDay,businessTimeZone,calendarDay} from './sales-access.js';
 const mm=72/25.4;
 // Versión en escala de grises del logo oficial, preparada para impresoras térmicas monocromáticas
 // (scripts/logo-print.mjs). Proporción original 469×400.
@@ -115,18 +115,25 @@ export async function closurePdf(closure,width=58) {
 }
 
 export async function statementPdf(account,settings,period={}) {
- const zone=businessTimeZone(),from=period.from?dayStart(period.from,zone):null,to=period.to?dayStart(nextDay(period.to),zone):null;
- const initial=account.events.filter(e=>from&&e.at<from).reduce((n,e)=>n+e.charge_cents-e.payment_cents,0);
- const events=account.events.filter(e=>(!from||e.at>=from)&&(!to||e.at<to));
- const final=initial+events.reduce((n,e)=>n+e.charge_cents-e.payment_cents,0);
+ const zone=businessTimeZone(),range=statementPeriod(account,period,zone);
+ const {initial,events,final}=range;
  const doc=new PDFDocument({size:'A4',margin:42,info:{Title:'Extracto de cartera',Author:settings.business_name}}),chunks=[];
  const result=new Promise((resolve,reject)=>{doc.on('data',chunk=>chunks.push(chunk));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);});
  const header=()=>{doc.font('Helvetica-Bold').fontSize(15).text(clean(settings.business_name));doc.font('Helvetica').fontSize(10).text(clean([settings.business_nit&&'NIT '+settings.business_nit,settings.business_address,settings.business_city,settings.business_phone].filter(Boolean).join(' · '))).moveDown();};
- header();doc.font('Helvetica-Bold').fontSize(18).text('Créditos y cartera').moveDown(.5);doc.font('Helvetica').fontSize(11).text(clean(`Cliente: ${account.customer.name}`)).text(clean(`Identificación: ${account.customer.identification||'No registrada'}`)).text(`Periodo: ${period.from||'Inicio'} - ${period.to||'Actual'}`).text(clean(`Saldo inicial: ${cop(initial)}`)).moveDown();
+ header();doc.font('Helvetica-Bold').fontSize(18).text('Créditos y cartera').moveDown(.5);doc.font('Helvetica').fontSize(11).text(clean(`Cliente: ${account.customer.name}`)).text(clean(`Identificación: ${account.customer.identification||'No registrada'}`)).text(range.from&&range.to?`Periodo: ${range.from} - ${range.to}`:'Sin movimientos de cartera para este cliente.').text(`Generado: ${new Intl.DateTimeFormat('es-CO',{dateStyle:'short',timeStyle:'short',timeZone:zone}).format(new Date())}`).text(clean(`Saldo inicial: ${cop(initial)}`)).moveDown();
+ if(!events.length&&account.events.length)doc.text('Sin movimientos en el periodo seleccionado.').moveDown();
  const columns=[42,160,207,288,374],widths=[110,42,75,80,179];
  const row=(values,bold=false)=>{const start=doc.y;doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(9);const height=Math.max(...values.map((v,i)=>doc.heightOfString(clean(v),{width:widths[i]})))+8;if(start+height>doc.page.height-55){doc.addPage();header();return row(values,bold);}values.forEach((v,i)=>doc.text(clean(v),columns[i],start,{width:widths[i],align:i>=2?'right':'left'}));doc.y=start+height;};
  row(['Fecha / movimiento','Factura','Cargo','Abono','Saldo'],true);
  let balance=initial;
  for(const event of events){balance+=event.charge_cents-event.payment_cents;const date=new Intl.DateTimeFormat('es-CO',{dateStyle:'short',timeStyle:'short',timeZone:zone}).format(new Date(event.at));row([`${date}\n${event.description}`,receiptNumber(event.invoice),cop(event.charge_cents),cop(event.payment_cents),cop(balance)]);}
  doc.moveDown();doc.x=42;doc.font('Helvetica-Bold').fontSize(12).text(clean(`Saldo final: ${cop(final)}`));doc.font('Helvetica').fontSize(9).moveDown().text('Los abonos conservan el valor original de cada factura. Extracto informativo; no es factura electrónica.');doc.end();return result;
+}
+
+export function statementPeriod(account,period={},zone=businessTimeZone()){
+ const start=period.from?dayStart(period.from,zone):null,end=period.to?dayStart(nextDay(period.to),zone):null;
+ const initial=account.events.filter(e=>start&&e.at<start).reduce((n,e)=>n+e.charge_cents-e.payment_cents,0);
+ const events=account.events.filter(e=>(!start||e.at>=start)&&(!end||e.at<end));
+ const firstInvoice=account.events.find(e=>e.type==='credit'),last=account.events.at(-1);
+ return {from:period.from||(firstInvoice?calendarDay(firstInvoice.at,zone):null),to:period.to||(last?calendarDay(last.at,zone):null),initial,events,final:initial+events.reduce((n,e)=>n+e.charge_cents-e.payment_cents,0)};
 }

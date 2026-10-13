@@ -1,3 +1,4 @@
+import {StockLoadScreen} from './src/StockLoadScreen';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {StatusBar} from 'expo-status-bar';
 import {Feather} from '@expo/vector-icons';
@@ -123,6 +124,7 @@ function Main(){
    {tab==='catalog'&&<CatalogScreen key={catalogVersion} initialTab={catalogTab} products={products} customers={allCustomers} user={user} run={run} refresh={refresh} busy={busy}/>}
    {tab==='history'&&<HistoryScreen platforms={platforms} refresh={refresh} businessDate={businessClock.date} key={historyVersion} user={user} settings={settings} run={run} busy={busy} initialSale={sale} initialClosure={closure} sessionFilter={sessionFilter} clearInitial={()=>{setSale(null);setClosure(null);}} customers={allCustomers} sessions={visibleSessions} queue={queue}/>}
    {(tab==='accounts'||tab==='routes')&&user.role==='admin'&&<AdminScreen section={tab} user={user} settings={settings} products={products} platforms={platforms} sessions={sessions} run={run} busy={busy} refresh={refresh} back={()=>go('settings')}/>}
+   {tab==='stock'&&user.role==='admin'&&<StockLoadScreen user={user} settings={settings} products={products} run={run} busy={busy} refresh={refresh} back={()=>go('settings')}/>}
    {tab==='settings'&&<SettingsScreen onAdmin={section=>go(section)} queued={queue.length} user={user} settings={settings} platforms={platforms} run={run} refresh={refresh} busy={busy} logout={logout}/>}
    {!!toast&&<Toast text={toast}/>}
   </View>

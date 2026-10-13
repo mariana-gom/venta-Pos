@@ -16,7 +16,7 @@ const PAGE = 30;
 
 export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLocalCustomer, active, session, products, customers, platforms, paperWidth, refresh, run, busy, onViewSale, onOpenCash}: Props) {
   const [cart, setCart] = useState<CartLine[]>([]), [query, setQuery] = useState(''), [limit, setLimit] = useState(PAGE), [view, setView] = useState<SaleView>('catalog');
-  const [customer, setCustomer] = useState(''), [pickCustomer, setPickCustomer] = useState(false), [customerSearch, setCustomerSearch] = useState(''), [newCustomer, setNewCustomer] = useState(false), [name, setName] = useState(''), [city, setCity] = useState(''),[identification,setIdentification]=useState('');
+  const [customer, setCustomer] = useState(''), [pickCustomer, setPickCustomer] = useState(false), [customerSearch, setCustomerSearch] = useState(''), [newCustomer, setNewCustomer] = useState(false), [name, setName] = useState(''), [city, setCity] = useState('');
   const [editing, setEditing] = useState<Product | null>(null), [qtyText, setQtyText] = useState('');
   const [pay, setPay] = useState(''), [reference, setReference] = useState(''), [received, setReceived] = useState('');
   const userId = user.id;
@@ -52,7 +52,7 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
   useEffect(() => { setReference(''); }, [pay]);
   const receivedCents = received.trim() ? moneyToCents(received) : null;
   const receivedError = method === 'cash' && received.trim() ? (receivedCents === null ? 'Escribe un valor válido, por ejemplo 50.000' : receivedCents < total ? `Faltan ${cop(total - receivedCents)}` : null) : null;
-  const valid = !!session && !!customer && linesOk && !!method && !receivedError && (method !== 'electronic' || !!reference.trim()) && (method !== 'credit' || !!selectedCustomer?.identification?.trim());
+  const valid = !!session && !!customer && linesOk && !!method && !receivedError && (method !== 'electronic' || !!reference.trim());
   const inCart = (id: string) => lines.find(l => l.product.id === id);
 
   const visible = useMemo(() => {
@@ -96,7 +96,7 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
       const key = Crypto.randomUUID(), soldAt = new Date().toISOString(), provisional = await nextProvisional();
       const c = selectedCustomer!, platformName = platforms.find(p => p.id === pay)?.name || null;
       const body = {session_id: session!.id, customer_id: customer, items: lines.map(l => ({product_id: l.product.id, quantity: quantityForApi(l.milli!), expected_price_cents: l.product.price_cents})), method, platform_id: method === 'electronic' ? pay : null, request_key: key,
-        reference: method === 'electronic' ? reference.trim() : undefined, route_id: products.find(p=>p.stock_milli!==null)?.route_id ?? undefined, sold_at: soldAt, offline_ref: provisional, ...(c.pending ? {new_customer: {id: c.id, name: c.name, city: c.city, identification:c.identification||''}} : {})};
+        reference: method === 'electronic' ? reference.trim() : undefined, route_id: products.find(p=>p.stock_milli!==null)?.route_id ?? undefined, sold_at: soldAt, offline_ref: provisional, ...(c.pending ? {new_customer: {id: c.id, name: c.name, city: c.city}} : {})};
       // Vista local de la venta: permite imprimir el comprobante y verla en el historial aunque no haya señal.
       const preview: Sale = {id: key, number: 0, session_id: session!.id, session_number: session!.number, seller_id: userId, customer_id: c.id, created_at: soldAt, total_cents: total,
         snapshot: {business_name: settings.business_name, business_nit: settings.business_nit, business_address: settings.business_address, business_phone: settings.business_phone, business_city: settings.business_city, customer_name: c.name, customer_city: c.city, customer_identification:c.identification, seller_name: user.name, offline_ref: provisional},
@@ -207,7 +207,7 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
             {receivedCents !== null && !receivedError && <Card tone={receivedCents > total ? 'yellow' : 'green'} style={{paddingVertical: 12}}><View style={styles.row}><Text style={[styles.h2, {fontSize: 15}]}>Cambio a entregar</Text><Text testID="cash-change" style={[styles.metric, {color: colors.ink}]}>{cop(receivedCents - total)}</Text></View></Card>}
           </View>}
           {method === 'electronic' && <Field label="Número de referencia" kind="plain" value={reference} onChange={setReference} placeholder="Ej. 000ABC123" testID="electronic-reference"/>}
-          {method === 'credit' && <Banner tone="yellow" text={selectedCustomer?.identification ? 'Esta venta queda pendiente en la cartera del cliente. No ingresa dinero a caja.' : 'Selecciona un cliente con identificación registrada para vender a crédito.'}/>}
+          {method === 'credit' && <Banner tone="yellow" text="Esta venta queda pendiente en la cartera del cliente seleccionado. No ingresa dinero a caja."/>}
           {method === 'electronic' && <Text style={styles.small}>Verifica que el pago aparezca en la cuenta antes de confirmar.</Text>}
         </Card>
         <Text style={[styles.small, {textAlign: 'center'}]}>Con señal, el sistema verifica precios, existencias y caja al confirmar. Sin señal, la venta queda guardada en el celular y se sube sola.</Text>
@@ -276,11 +276,11 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
         <Button title="Crear y seleccionar" icon="user-plus" size="lg" disabled={busy || !name.trim() || !city.trim()} loading={busy} testID="customer-create"
           onPress={() => run(async () => {
             let c: Customer;
-            try { c = await api<Customer>('/customers', 'POST', {name: name.trim(), city: city.trim(),identification:identification.trim()}); await refresh(); }
+            try { c = await api<Customer>('/customers', 'POST', {name: name.trim(), city: city.trim()}); await refresh(); }
             catch (e) {
               if (!(e instanceof ApiError && e.status === 0)) throw e;
               // Sin señal: el cliente queda en el celular y se crea en el sistema junto con la venta.
-              c = {id: Crypto.randomUUID(), name: name.trim(), city: city.trim(), identification:identification.trim(), pending: true}; onLocalCustomer(c);
+              c = {id: Crypto.randomUUID(), name: name.trim(), city: city.trim(), pending: true}; onLocalCustomer(c);
             }
             setCustomer(c.id); setNewCustomer(false); setPickCustomer(false); setName(''); setCity('');
           }, 'Cliente guardado')}/>
@@ -288,14 +288,14 @@ export function SaleScreen({businessDate, user, settings, enqueue, dequeue, onLo
       </> : <Button title="Crear cliente nuevo" icon="user-plus" variant="secondary" onPress={() => { setNewCustomer(true); setName(customerSearch.trim()); }} testID="customer-new"/>}>
       {newCustomer ? <>
         <Field label="Nombre del cliente" kind="name" value={name} onChange={setName} autoFocus placeholder="Ej. Manuel Rodríguez"/>
-        <Field label="Identificación (para crédito)" kind="plain" value={identification} onChange={setIdentification}/><Field label="Ciudad o municipio" kind="name" value={city} onChange={setCity} placeholder="Ej. El Rosal"/>
+        <Field label="Ciudad o municipio" kind="name" value={city} onChange={setCity} placeholder="Ej. El Rosal"/>
       </> : <>
         <SearchBar value={customerSearch} onChange={setCustomerSearch} placeholder="Buscar por nombre o ciudad" testID="customer-search"/>
         {customerMatches.length === 0 && <Text style={[styles.muted, {textAlign: 'center', paddingVertical: 12}]}>{customers.length ? 'Ningún cliente coincide. Créalo con el botón de abajo.' : 'Todavía no hay clientes. Crea el primero.'}</Text>}
-        <View>{customerMatches.map(c => <Pressable key={c.id} accessibilityRole="button" accessibilityLabel={`${c.name}, ${c.city}`} onPress={() => { setCustomer(c.id); setPickCustomer(false); }}
+        <View>{customerMatches.map(c => <Pressable key={c.id} accessibilityRole="button" accessibilityLabel={`${c.name}, ${c.city}${customers.filter(x=>x.name===c.name&&x.city===c.city).length>1?' · Cuenta '+c.id.slice(0,8):''}`} onPress={() => { setCustomer(c.id); setPickCustomer(false); }}
           style={({pressed}) => [{flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.line, minHeight: 56}, pressed && {backgroundColor: colors.greenSoft}]}>
           <View style={{width: 36, height: 36, borderRadius: 18, backgroundColor: colors.greenSoft, alignItems: 'center', justifyContent: 'center'}}><Text style={{fontWeight: '800', color: colors.green}}>{c.name[0]?.toUpperCase()}</Text></View>
-          <View style={{flex: 1}}><Text style={{fontSize: 15, fontWeight: '700', color: colors.ink}}>{c.name}</Text><Text style={styles.small}>{c.city}</Text></View>
+          <View style={{flex: 1}}><Text style={{fontSize: 15, fontWeight: '700', color: colors.ink}}>{c.name}</Text><Text style={styles.small}>{c.city}{customers.filter(x=>x.name===c.name&&x.city===c.city).length>1?' · Cuenta '+c.id.slice(0,8):''}</Text></View>
           {c.id === customer && <Feather name="check-circle" size={20} color={colors.green}/>}
         </Pressable>)}</View>
       </>}

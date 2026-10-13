@@ -1,5 +1,5 @@
 export type User={id:string;name:string;username:string;role:'admin'|'seller';active:number;route_id?:string|null};
-export type Product={code?:string|null;category?:string;brand?:string;wholesale_price_cents?:number|null;route_id?:string|null;id:string;name:string;price_cents:number|null;unit:'unit'|'kg'|null;active:number;stock_milli:number|null};
+export type Product={code?:string|null;central_stock_enabled?:number;route_id?:string|null;id:string;name:string;price_cents:number|null;unit:'unit'|'kg'|null;active:number;stock_milli:number|null};
 export type SellableProduct=Product & {price_cents:number;unit:'unit'|'kg'};
 export type Customer={identification?:string;id:string;name:string;city:string;pending?:boolean};
 export type Platform={id:string;name:string;active:number};
@@ -12,13 +12,13 @@ export type SalesAccess={date:string;time_zone:string;start:string;end:string;se
 export type SaleAcknowledgement={id:string;number:number;history_restricted:true;message:string};
 export type SalesPage={access:SalesAccess;sales:Sale[];count:number;page:number;groups:Record<string,{key:string|null;count:number;total_cents:number}[]>};
 export type CartLine={product:SellableProduct;quantity:string};
-export type Tab='home'|'sale'|'cash'|'catalog'|'history'|'settings'|'accounts'|'routes';
+export type Tab='home'|'sale'|'cash'|'catalog'|'history'|'settings'|'accounts'|'routes'|'stock';
 
 export type Route={id:string;name:string;active:number};
 export type Debt={sale_id:string;number:number;amount_cents:number;balance_cents:number;paid_cents:number;state:string;cancellation_id?:string};
 export type Collection={id:string;amount_cents:number;method:string;reference:string|null;occurred_at:string;receiver_name:string;session_id:string|null;outside_cash_reason:string|null;observation:string;allocations:{id:string;number:number;sale_id:string;amount_cents:number}[]};
 export type AccountSummary={customer:Customer;balance_cents:number;credit_cents:number;paid_cents:number;state:string};
 export type Account=AccountSummary&{debts:Debt[];collections:Collection[];events:{id:string;at:string;invoice:number;charge_cents:number;payment_cents:number;balance_cents:number;description:string}[]};
-export type Inventory={routes:{product_id:string;route_id:string;quantity_milli:number;product_name:string;route_name:string}[];unassigned:{product_id:string;quantity_milli:number;product_name:string}[];movements:{id:string;product_name:string;route_name:string|null;quantity_milli:number;kind:string;actor_name:string;created_at:string;reason:string}[]};
-export type ImportRow={row:number;code:string;name:string;category:string;brand:string;action:string;previous_price_cents:number|null;new_price_cents:number;errors:string[];warnings:string[];status?:string};
-export type ImportPreview={id:string;header_row:number;rows:ImportRow[];summary:{new:number;updates:number;omitted:number}};
+export type Inventory={routes:{product_id:string;route_id:string;quantity_milli:number;product_name:string;route_name:string}[];unassigned:{product_id:string;quantity_milli:number;product_name:string}[];movements:{id:string;product_name:string;route_name:string|null;quantity_milli:number;kind:string;actor_name:string;created_at:string;reason:string;effective_date?:string|null;product_id:string}[]};
+export type ImportRow={row:number;code:string;name:string;action:string;previous_price_cents:number|null;previous_wholesale_cents?:number|null;new_price_cents:number;unit:'unit'|'kg'|null;unit_locked?:boolean;errors:string[];warnings:string[];status?:string};
+export type ImportPreview={id:string;header_row:number;unit_column:string|null;rows:ImportRow[];summary:{new:number;updates:number;omitted:number}};

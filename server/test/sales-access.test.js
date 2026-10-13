@@ -38,6 +38,7 @@ test('API: vendedores limitados al día y propietario; administrador histórico;
    return r.headers.get('content-type')?.includes('application/pdf')?Buffer.from(await r.arrayBuffer()):r.json();
   }
   const product=await req('/products','admin','POST',{name:'Producto',price:'5000',unit:'unit'});
+  db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(product.id);
   const customer=await req('/customers','seller','POST',{name:'Cliente',city:'Bogotá'},201);
   const session=await req('/cash-sessions','seller','POST',{opening:'1000'},201);
   const otherSession=await req('/cash-sessions','other','POST',{opening:'0'},201);

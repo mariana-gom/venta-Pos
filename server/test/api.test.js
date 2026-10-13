@@ -20,12 +20,14 @@ test('Flujo integral: permisos, stock, conciliación, persistencia e históricos
  try{
   await request('POST','/products',{name:'Denegado',price:'1',unit:'unit'},'seller',403);
   const unit=await request('POST','/products',{name:'Producto unidad',price:'5000',unit:'unit',stock:'1000'},'admin');
+  await request('POST','/inventory',{product_id:unit.id,route_id:null,quantity:'1000',kind:'entry',reason:'Entrada central',request_key:randomUUID()});
   const route=await request('POST','/routes',{name:'Ruta prueba',request_key:randomUUID()},'admin',201);
   await request('PUT','/users/'+u.id+'/route',{route_id:route.id,request_key:randomUUID()});
   await request('POST','/inventory',{product_id:unit.id,route_id:route.id,quantity:'1000',kind:'allocate',reason:'Distribución inicial',request_key:randomUUID()});
   const cheese=await request('POST','/products',{name:'Queso campesino',price:'24000',unit:'kg'},'admin');
+  db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(cheese.id);
   const customer=await request('POST','/customers',{name:'Ana',city:'Bogotá'},'seller',201);
-  const duplicate=await request('POST','/customers',{name:'Ana',city:'Bogotá'},'seller',201);assert.equal(duplicate.id,customer.id);
+  const duplicate=await request('POST','/customers',{name:'Ana',city:'Bogotá'},'seller',201);assert.notEqual(duplicate.id,customer.id);
   const session=await request('POST','/cash-sessions',{opening:'0'},'seller',201);
   await request('POST','/cash-sessions',{opening:'0'},'seller',409);
   const sell=(items,method='cash',platform_id=null,key=randomUUID())=>request('POST','/sales',{session_id:session.id,customer_id:customer.id,items,method,platform_id,reference:method==='electronic'?'000-PRUEBA':undefined,request_key:key},'seller',201);
@@ -48,7 +50,9 @@ test('Flujo integral: permisos, stock, conciliación, persistencia e históricos
   assert.equal((await request('GET',`/sales/${first.id}`)).items[0].name,'Producto unidad');
   // Completar exactamente 2 millones efectivo y 500 mil electrónico.
   const cashTop=await request('POST','/products',{name:'Ajuste prueba efectivo',price:'1949000',unit:'unit'});
+  db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(cashTop.id);
   const elecTop=await request('POST','/products',{name:'Ajuste prueba electrónico',price:'450000',unit:'unit'});
+  db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(elecTop.id);
   await sell([{product_id:cashTop.id,quantity:'1'}]);await sell([{product_id:elecTop.id,quantity:'1'}],'electronic','nequi');
   await backup(db,join(dir,'backup.sqlite'));const restored=openDatabase(join(dir,'backup.sqlite'));assert.equal(restored.prepare('SELECT COUNT(*) AS n FROM sales').get().n,5);assert.equal(restored.prepare('SELECT COUNT(*) AS n FROM documents').get().n,10);restored.close();
   await new Promise(resolve=>server.close(resolve));db.close();db=openDatabase(path);server=createApp(db).listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));base=`http://127.0.0.1:${server.address().port}`;
@@ -93,6 +97,7 @@ test('Concurrencia: cierre único y ninguna venta posterior al cierre',async()=>
  async function req(path,body,token){const r=await fetch(base+path,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,data:await r.json()};}
  try{
   const p=(await req('/products',{name:'P',unit:'unit',price:'5000'},adminToken)).data;
+  db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(p.id);
   const c=(await req('/customers',{name:'C',city:'Bogotá'},sellerToken)).data;
   const s=(await req('/cash-sessions',{opening:'0'},sellerToken)).data;
   const body={session_id:s.id,customer_id:c.id,items:[{product_id:p.id,quantity:'1'}],method:'cash',request_key:randomUUID()};

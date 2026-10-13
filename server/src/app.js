@@ -7,7 +7,7 @@ import { id,now,audit,transaction,BUSINESS_FIELDS } from './db.js';
 import { schemas,validate } from './validation.js';
 import { money,quantity,scaled } from './money.js';
 import { sessionFor,totals,recordSale,saleDetail,closeSession,closureDetail,fail,SESSION_NUMBER } from './service.js';
-import {account,registerCollection,cancelSale,adjustStock,inventoryMove,once} from './operations.js';
+import {account,registerCollection,cancelSale,adjustStock,inventoryMove,once,loadRouteStock,reviewPrices} from './operations.js';
 import {previewImport,applyImport,importCsv} from './import-products.js';
 import {receiptPdf,statementPdf} from './pdf.js';
 import {storedPdf,generateDocuments} from './documents.js';
@@ -52,21 +52,23 @@ export function createApp(db) {
   const fields=BUSINESS_FIELDS.filter(f=>req.input[f]!==undefined);
   const result=transaction(db,()=>{db.prepare(`UPDATE settings SET business_name=?,paper_width=?${fields.map(f=>`,${f}=?`).join('')} WHERE id=1`).run(req.input.business_name,req.input.paper_width,...fields.map(f=>req.input[f]));audit(db,req.user.id,'settings.update','1',req.input);return db.prepare(settingsQuery).get();});res.json(result);
  });
- app.get('/api/products',(req,res)=>{const rows=db.prepare(`SELECT * FROM products ${req.user.role==='admin'?'':'WHERE active=1'} ORDER BY name`).all();res.json(req.user.role==='admin'?rows:rows.map(p=>({...p,route_id:req.user.route_id,stock_milli:p.stock_milli===null?null:(db.prepare('SELECT quantity_milli FROM route_stock WHERE product_id=? AND route_id=?').get(p.id,req.user.route_id||'')?.quantity_milli||0)})));});
+ const publicProduct=p=>{const {wholesale_price_cents,category,brand,...rest}=p;return rest;};
+ app.get('/api/products/price-migration',admin,(_,res)=>res.json(db.prepare('SELECT p.id,p.name,p.unit,p.price_cents,r.wholesale_price_cents FROM product_price_reviews r JOIN products p ON p.id=r.product_id WHERE r.reviewed_at IS NULL ORDER BY p.name').all()));
+ app.post('/api/products/price-migration',admin,validate(schemas.priceReview),(req,res)=>res.json(reviewPrices(db,req.user,req.input)));
+ app.post('/api/inventory/loads',admin,validate(schemas.stockLoad),(req,res)=>res.status(201).json(loadRouteStock(db,req.user,req.input)));
+ app.get('/api/inventory/loads',admin,(_,res)=>res.json(db.prepare('SELECT l.*,r.name route_name,u.name actor_name FROM stock_loads l JOIN routes r ON r.id=l.route_id JOIN users u ON u.id=l.actor_id ORDER BY l.created_at DESC LIMIT 100').all().map(l=>({...l,items:db.prepare('SELECT i.*,p.name,p.unit FROM stock_load_items i JOIN products p ON p.id=i.product_id WHERE load_id=?').all(l.id)}))));
+ app.get('/api/products',(req,res)=>{const rows=db.prepare(`SELECT * FROM products ${req.user.role==='admin'?'':'WHERE active=1'} ORDER BY name`).all();res.json(req.user.role==='admin'?rows.map(publicProduct):rows.map(p=>({...publicProduct(p),route_id:req.user.route_id,stock_milli:p.stock_milli===null?null:(db.prepare('SELECT quantity_milli FROM route_stock WHERE product_id=? AND route_id=?').get(p.id,req.user.route_id||'')?.quantity_milli||0)})));});
  const saveProduct=(req,res)=>res.json(transaction(db,()=>{
   const p=req.input;const productId=req.params.id||id();const previous=req.params.id?db.prepare('SELECT * FROM products WHERE id=?').get(productId):null;
   if(req.params.id&&!previous) fail(404,'Producto no encontrado.');
   if(previous && previous.unit!==p.unit && (db.prepare('SELECT id FROM sale_items WHERE product_id=?').get(productId)||(previous.unit&&db.prepare('SELECT id FROM inventory_movements WHERE product_id=?').get(productId)))) fail(409,'Un producto con ventas o movimientos de inventario conserva su unidad de medida. Crea otro producto.');
   const price=money(p.price);if(price<=0) fail(400,'El precio debe ser mayor a cero.');
-  const stock=p.stock===null?null:(scaled(p.stock,3,'Existencias')===0?0:quantity(p.stock,p.unit)); const updated=now();
-  const allocated=db.prepare('SELECT COALESCE(SUM(quantity_milli),0) n FROM route_stock WHERE product_id=?').get(productId).n;
-  if(previous&&previous.stock_milli!==null&&stock===null&&(allocated||db.prepare("SELECT id FROM inventory_movements WHERE product_id=? AND kind='sale'").get(productId)))fail(409,'No puedes desactivar el inventario con existencias asignadas o movimientos de venta.');
-  if(stock!==null&&allocated>stock)fail(409,'El total no puede ser menor al inventario de las rutas. Ajusta por ruta.');
-  if(previous&&previous.stock_milli!==stock&&!p.reason)fail(400,'Motivo obligatorio para ajustar existencias.');
-  db.prepare('INSERT INTO products(id,name,price_cents,unit,active,stock_milli,created_at,updated_at,code,category,brand,wholesale_price_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,price_cents=excluded.price_cents,unit=excluded.unit,active=excluded.active,stock_milli=excluded.stock_milli,updated_at=excluded.updated_at,code=excluded.code,category=excluded.category,brand=excluded.brand,wholesale_price_cents=excluded.wholesale_price_cents').run(productId,p.name,price,p.unit,Number(p.active),stock,previous?.created_at||updated,updated,p.code===undefined?previous?.code||null:p.code,p.category??previous?.category??'',p.brand??previous?.brand??'',p.wholesale_price===undefined?previous?.wholesale_price_cents??null:p.wholesale_price===null?null:money(p.wholesale_price));
-  if(stock!==null){db.prepare('INSERT INTO unassigned_stock VALUES(?,?) ON CONFLICT(product_id) DO UPDATE SET quantity_milli=excluded.quantity_milli').run(productId,stock-allocated);if(!previous||previous.stock_milli!==stock)db.prepare('INSERT INTO inventory_movements VALUES(?,?,?,?,?,?,?,?,?,?)').run(id(),productId,null,stock-(previous?.stock_milli||0),previous?'adjustment':'entry',req.user.id,updated,p.reason||'Existencias iniciales sin asignar',null,null);}else db.prepare('DELETE FROM unassigned_stock WHERE product_id=?').run(productId);
+  // El formulario nunca registra stock. Los existentes conservan exactamente sus saldos.
+  const stock=previous?previous.stock_milli:0,updated=now();
+  db.prepare('INSERT INTO products(id,name,price_cents,unit,active,stock_milli,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,price_cents=excluded.price_cents,unit=excluded.unit,active=excluded.active,updated_at=excluded.updated_at').run(productId,p.name,price,p.unit,Number(p.active),stock,previous?.created_at||updated,updated);
+  if(previous)db.prepare('UPDATE product_price_reviews SET reviewed_at=?,actor_id=?,chosen_price_cents=? WHERE product_id=? AND reviewed_at IS NULL').run(updated,req.user.id,price,productId);
   audit(db,req.user.id,previous?'product.update':'product.create',productId,{before:previous,after:{...p,price_cents:price,stock_milli:stock}});
-  return db.prepare('SELECT * FROM products WHERE id=?').get(productId);
+  return publicProduct(db.prepare('SELECT * FROM products WHERE id=?').get(productId));
  }));
  app.post('/api/products',admin,validate(schemas.product),saveProduct);app.put('/api/products/:id',admin,validate(schemas.product),saveProduct);
  app.delete('/api/products/:id',admin,(req,res)=>{
@@ -74,12 +76,12 @@ export function createApp(db) {
  });
  app.get('/api/customers',(req,res)=>{const search=String(req.query.search||'').slice(0,120);res.json(db.prepare(`SELECT * FROM customers WHERE active=1 AND (instr(lower(name),lower(?))>0 OR instr(identification,?)>0) ORDER BY name`).all(search,search));});
  app.post('/api/customers',validate(schemas.customer),(req,res)=>res.status(201).json(transaction(db,()=>{
-  const p=req.input;const existing=p.identification?db.prepare('SELECT * FROM customers WHERE identification=? AND active=1').get(p.identification):db.prepare("SELECT * FROM customers WHERE name=? COLLATE NOCASE AND city=? COLLATE NOCASE AND identification='' AND active=1").get(p.name,p.city);if(existing)return existing;
-  const customerId=id();const created=now();db.prepare('INSERT INTO customers(id,name,city,active,created_at,updated_at,identification) VALUES (?,?,?,?,?,?,?)').run(customerId,p.name,p.city,1,created,created,p.identification);audit(db,req.user.id,'customer.create',customerId,p);return db.prepare('SELECT * FROM customers WHERE id=?').get(customerId);
+  const p=req.input;
+  const customerId=id();const created=now();db.prepare('INSERT INTO customers(id,name,city,active,created_at,updated_at,identification) VALUES (?,?,?,?,?,?,?)').run(customerId,p.name,p.city,1,created,created,'');audit(db,req.user.id,'customer.create',customerId,p);return db.prepare('SELECT * FROM customers WHERE id=?').get(customerId);
  })));
  app.put('/api/customers/:id',admin,validate(schemas.customer),(req,res)=>res.json(transaction(db,()=>{
   if(!db.prepare('SELECT id FROM customers WHERE id=? AND active=1').get(req.params.id)) fail(404,'Cliente no encontrado.');
-  db.prepare('UPDATE customers SET name=?,city=?,updated_at=?,identification=? WHERE id=?').run(req.input.name,req.input.city,now(),req.input.identification,req.params.id);audit(db,req.user.id,'customer.update',req.params.id,req.input);return db.prepare('SELECT * FROM customers WHERE id=?').get(req.params.id);
+  db.prepare('UPDATE customers SET name=?,city=?,updated_at=? WHERE id=?').run(req.input.name,req.input.city,now(),req.params.id);audit(db,req.user.id,'customer.update',req.params.id,req.input);return db.prepare('SELECT * FROM customers WHERE id=?').get(req.params.id);
  })));
  app.delete('/api/customers/:id',admin,(req,res)=>{
   transaction(db,()=>{if(!db.prepare('SELECT id FROM customers WHERE id=?').get(req.params.id))fail(404,'Cliente no encontrado.');db.prepare('UPDATE customers SET active=0,updated_at=? WHERE id=?').run(now(),req.params.id);audit(db,req.user.id,'customer.deactivate',req.params.id);});res.json({ok:true});

@@ -29,7 +29,8 @@ try{
  await call('/products',{name:'Queso campesino',price:'24000',unit:'kg'});await call('/products',{name:'Chorizo santarrosano artesanal ahumado extra picante de la casa x 500 g',price:'18500',unit:'unit'});
  await call('/customers',{name:'Ana',city:'Bogotá',identification:'001234'});
  const route=await call('/routes',{name:'Ruta prueba',request_key:crypto.randomUUID()});db.prepare('UPDATE users SET route_id=? WHERE id=?').run(route.id,seller.id);db.prepare('INSERT INTO route_assignments VALUES(?,?,?,?,?)').run(crypto.randomUUID(),seller.id,route.id,admin.id,new Date(Date.now()-86400000).toISOString());
- const soda=(await call('/products')).find(p=>p.name==='Gaseosa');await call('/inventory',{product_id:soda.id,route_id:route.id,quantity:'10',kind:'allocate',reason:'Distribución inicial',request_key:crypto.randomUUID()});
+ const allProducts=await call('/products');for(const p of allProducts.filter(p=>p.name!=='Gaseosa'))db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(p.id);
+ const soda=allProducts.find(p=>p.name==='Gaseosa');await call('/inventory',{product_id:soda.id,route_id:null,quantity:'10',kind:'entry',reason:'Entrada central',request_key:crypto.randomUUID()});await call('/inventory',{product_id:soda.id,route_id:route.id,quantity:'10',kind:'allocate',reason:'Distribución inicial',request_key:crypto.randomUUID()});
  browser=await chromium.launch({headless:true});const context=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:1,acceptDownloads:true});page=await context.newPage();
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  const {expect}=await import('@playwright/test');
@@ -111,7 +112,7 @@ try{
  await id('close-cash').fill('78.000');await page.getByRole('button',{name:/Coincide con lo registrado/}).click();await expect(page.getByText('Cuadra exacto').first()).toBeVisible();await capture('caja-cierre');
  await id('review-close').click();await page.getByRole('button',{name:'Confirmar cierre definitivo'}).click();await expect(id('closure-detail')).toBeVisible();await expect(page.getByText('Cierre #0001')).toBeVisible();await capture('cierre');
  await page.getByRole('button',{name:'Ver ventas incluidas'}).click();await expect(id('sale-row-1')).toBeVisible();
- await id('tab-catalog').click();await id('catalog-Gaseosa').click();await expect(id('catalog-stock')).toHaveValue('6');await capture('catalogo-editar');
+ await id('tab-catalog').click();await id('catalog-Gaseosa').click();await expect(id('catalog-stock')).toHaveCount(0);await expect(page.getByLabel('Código único')).toHaveCount(0);await expect(page.getByLabel('Precio mayorista (opcional)')).toHaveCount(0);await capture('catalogo-editar');
  // Permisos y cambio de día con reloj controlado, sobre la misma interfaz exportada.
  const before=new Date('2026-10-13T04:59:30.000Z');mock.timers.enable({apis:['Date'],now:before});
  async function auth(username){const r=await fetch(origin+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});return(await r.json()).token;}

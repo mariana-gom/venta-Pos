@@ -1,4 +1,4 @@
-import {migrateOperations} from './migrations.js';
+import {migrateOperations,migrateSimpleProducts} from './migrations.js';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -11,7 +11,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/pos.sql
  db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
  migrate(db);
  migrateOperations(db);
- for (const table of ['sales','sale_items','payments','closures','closure_notes','audit','documents','debts','collections','collection_allocations','cancellations','allocation_resolutions','refunds','closure_adjustments','inventory_movements','route_assignments','import_runs','operation_requests']) {
+ migrateSimpleProducts(db);
+ for (const table of ['sales','sale_items','payments','closures','closure_notes','audit','documents','debts','collections','collection_allocations','cancellations','allocation_resolutions','refunds','closure_adjustments','inventory_movements','route_assignments','import_runs','operation_requests','stock_loads','stock_load_items']) {
   for (const operation of ['UPDATE','DELETE']) db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_no_${operation} BEFORE ${operation} ON ${table} BEGIN SELECT RAISE(ABORT,'Registro inmutable'); END;`);
  }
  return db;

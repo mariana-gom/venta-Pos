@@ -38,6 +38,7 @@ test('Datos del negocio congelados en la venta y número corto de caja',async()=
   await req('PUT','/settings',{business_name:'X',paper_width:80,business_nit:'1'.repeat(41)},'admin',400);
   await req('PUT','/settings',{business_name:'X',paper_width:80,business_nit:'1'},'seller',403);
   const product=await req('POST','/products',{name:'Pollo',price:'12000',unit:'kg'});const customer=await req('POST','/customers',{name:'Manuel',city:'El Rosal'},'seller',201);
+  db.prepare('UPDATE products SET stock_milli=NULL WHERE id=?').run(product.id);
   const session=await req('POST','/cash-sessions',{opening:'0'},'seller',201);assert.equal(session.number,1);
   const sale=await req('POST','/sales',{session_id:session.id,customer_id:customer.id,items:[{product_id:product.id,quantity:'125.5'}],method:'cash',request_key:randomUUID()},'seller',201);
   assert.equal(sale.total_cents,150600000);assert.equal(sale.session_number,1);assert.equal(sale.snapshot.business_nit,'900.123.456-7');assert.equal(sale.snapshot.business_address,'Calle 10 # 5-20');

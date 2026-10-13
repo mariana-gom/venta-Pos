@@ -66,15 +66,14 @@ export function recordSale(db,user,input) {
    alerts.push({type:'session_moved',from_session:session.id});session=sessionFor(db,user,open.id);
   }
   let customer=db.prepare(`SELECT * FROM customers WHERE id=? ${late?'':'AND active=1'}`).get(input.customer_id);
-  // Cliente creado en ruta sin señal: llega con la venta. Si ya existe con el mismo nombre y ciudad, se reutiliza.
+  // La identidad del cliente es su ID interno, también durante sincronización sin conexión.
   if(!customer&&input.new_customer&&input.new_customer.id===input.customer_id){
    const c=input.new_customer;
-   customer=c.identification?db.prepare('SELECT * FROM customers WHERE identification=? AND active=1').get(c.identification):db.prepare("SELECT * FROM customers WHERE name=? COLLATE NOCASE AND city=? COLLATE NOCASE AND identification='' AND active=1").get(c.name,c.city);
-   if(!customer){db.prepare('INSERT INTO customers(id,name,city,active,created_at,updated_at,identification) VALUES (?,?,?,?,?,?,?)').run(c.id,c.name,c.city,1,created,created,c.identification||'');audit(db,user.id,'customer.create',c.id,{name:c.name,city:c.city,offline:true});customer=db.prepare('SELECT * FROM customers WHERE id=?').get(c.id);}
+   db.prepare('INSERT INTO customers(id,name,city,active,created_at,updated_at) VALUES (?,?,?,?,?,?)').run(c.id,c.name,c.city,1,created,created);
+   audit(db,user.id,'customer.create',c.id,{name:c.name,city:c.city,offline:true});customer=db.prepare('SELECT * FROM customers WHERE id=?').get(c.id);
   }
   if(!customer) fail(400,'Selecciona un cliente activo.');
   const pay=electronic(db,input);
-  if(input.method==='credit'&&!customer.identification?.trim())fail(400,'El crédito requiere un cliente identificado.');
   // Se valida la asignación actual del usuario autenticado. La fecha o ruta del navegador no otorgan acceso a otro stock.
   const currentUser=db.prepare('SELECT route_id FROM users WHERE id=? AND active=1').get(user.id);if(!currentUser)fail(403,'Usuario inactivo.');
   const routeId=currentUser.route_id||null;

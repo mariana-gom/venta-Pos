@@ -5,7 +5,7 @@ import {api, API_URL} from './api';
 import {Badge, Button, Card, Choice, Confirm, Divider, Field, Logo, Page, Segmented, colors, date, initials, styles} from './ui';
 import type {Settings, User, Platform} from './types';
 import type {Run} from '../App';
-type Props = {onAdmin:(section:'accounts'|'routes')=>void;queued: number; user: User; settings: Settings; platforms: Platform[]; run: Run; refresh: () => Promise<void>; busy: boolean; logout: () => void};
+type Props = {onAdmin:(section:'accounts'|'routes'|'stock')=>void;queued: number; user: User; settings: Settings; platforms: Platform[]; run: Run; refresh: () => Promise<void>; busy: boolean; logout: () => void};
 type Audit = {id: string; actor_name: string; action: string; created_at: string};
 // Nombres comprensibles para la bitácora de auditoría.
 const ACTIONS: Record<string, string> = {
@@ -47,7 +47,8 @@ export function SettingsScreen({onAdmin,queued, user, settings, platforms, run, 
 
     {admin && <>
       <Button title="Créditos y cartera" icon="book-open" variant="secondary" onPress={()=>onAdmin('accounts')} testID="admin-accounts"/>
-      <Button title="Rutas e inventario" icon="map" variant="secondary" onPress={()=>onAdmin('routes')} testID="admin-routes"/>
+      <Button title="Rutas" icon="map" variant="secondary" onPress={()=>onAdmin('routes')} testID="admin-routes"/>
+      <Button title="Carga de stock por ruta" icon="package" variant="secondary" onPress={()=>onAdmin('stock')} testID="admin-stock"/>
       <Group id="business" open={open} onToggle={setOpen} icon="briefcase" title="Datos del negocio" subtitle="Lo que se imprime en el comprobante">
         <Field label="Nombre comercial" value={business.business_name} onChange={set('business_name')} testID="settings-name"/>
         <Field label="NIT o identificación (opcional)" kind="plain" value={business.business_nit} onChange={set('business_nit')} placeholder="Ej. 900.123.456-7"/>

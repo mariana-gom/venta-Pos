@@ -1,4 +1,24 @@
 // Ejecutado una vez al iniciar, antes de aceptar peticiones. Nunca modifica facturas o cierres existentes.
+export function migrateSimpleProducts(db) {
+ if(db.prepare('SELECT 1 FROM schema_migrations WHERE version=3').get())return;
+ db.exec('BEGIN IMMEDIATE');
+ try {
+  db.exec(`
+   ALTER TABLE products ADD COLUMN central_stock_enabled INTEGER NOT NULL DEFAULT 0 CHECK(central_stock_enabled IN (0,1));
+   UPDATE products SET central_stock_enabled=1 WHERE id IN (SELECT product_id FROM unassigned_stock);
+   CREATE TABLE product_price_reviews(product_id TEXT PRIMARY KEY REFERENCES products(id),normal_price_cents INTEGER,wholesale_price_cents INTEGER,reviewed_at TEXT,actor_id TEXT REFERENCES users(id),chosen_price_cents INTEGER);
+   INSERT INTO product_price_reviews(product_id,normal_price_cents,wholesale_price_cents) SELECT id,price_cents,wholesale_price_cents FROM products WHERE wholesale_price_cents IS NOT NULL;
+   CREATE TABLE stock_loads(id TEXT PRIMARY KEY,route_id TEXT NOT NULL REFERENCES routes(id),load_date TEXT NOT NULL,actor_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,reason TEXT NOT NULL,request_key TEXT NOT NULL UNIQUE);
+   CREATE TABLE stock_load_items(load_id TEXT NOT NULL REFERENCES stock_loads(id),product_id TEXT NOT NULL REFERENCES products(id),quantity_milli INTEGER NOT NULL CHECK(quantity_milli>0),before_milli INTEGER NOT NULL,after_milli INTEGER NOT NULL,source TEXT NOT NULL CHECK(source IN ('central','entry')),PRIMARY KEY(load_id,product_id));
+   ALTER TABLE inventory_movements ADD COLUMN load_id TEXT REFERENCES stock_loads(id);
+   ALTER TABLE inventory_movements ADD COLUMN effective_date TEXT;
+   DROP INDEX IF EXISTS customer_identification;
+   INSERT INTO schema_migrations VALUES(3,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  `);
+  if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Referencias inválidas en la migración.');
+  db.exec('COMMIT');
+ }catch(error){db.exec('ROLLBACK');throw error;}
+}
 export function migrateOperations(db) {
  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
  if(db.prepare('SELECT 1 FROM schema_migrations WHERE version=2').get())return;
