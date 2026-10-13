@@ -2,9 +2,15 @@
 
 ## Migración y puesta en marcha
 
-Al iniciar la API se aplica `schema_migrations.version=2` en una transacción. Se conservan IDs, facturas, pagos, clientes, precios normales, documentos y cierres. Se amplían los pagos para crédito y referencia, los clientes para identificación y el catálogo para código, categoría, marca y precio mayorista. Los productos importados pueden quedar inactivos sin precio normal ni unidad.
+Al iniciar la API se aplica `schema_migrations.version=3` en una transacción (después de la versión 2 si hace falta). Conserva IDs, facturas, precios vendidos, documentos, cierres, cartera y movimientos. Agrega cargas diarias y sus detalles, fecha efectiva de movimientos, indicador de inventario central y revisión de precios antiguos. Documentos de clientes, marca, categoría y precio adicional antiguos se conservan como datos históricos en la base, sin campos de captura ni segundo precio operativo.
 
-El stock global existente se identifica como saldo **sin asignar**. No se copia a todas las rutas. En Perfil → Rutas e inventario, el administrador crea las rutas, asigna una a cada vendedor y distribuye ese saldo. Distribuir resta del saldo sin asignar y agrega a una ruta; no aumenta el total. Entrada agrega existencias; conteo establece la existencia final y registra la diferencia. Ambos requieren motivo y dejan movimiento auditado.
+Productos solicita nombre, modalidad unidad/kg y un único precio positivo. El ID es automático. Crear productos no registra cantidades ni movimientos: el saldo inicial técnico es cero, sin saldo central. El producto se vende cuando se le entrega stock a su ruta. Los productos históricos sin control siguen funcionando igual; una carga explícita habilita su control. Editar un producto conserva el stock y su código interno del Excel.
+
+Los productos con precio adicional anterior aparecen en Productos → Revisar precio único. La vista previa muestra ambos valores históricos y el precio único propuesto (mayorista válido, o precio actual); no cambia ningún precio hasta confirmar. También editar/importar muestra los valores anteriores antes de confirmar el único precio. Se conserva la trazabilidad de la elección y el precio de todas las facturas anteriores.
+
+Perfil → Rutas permite crear, editar, desactivar y asignar vendedores. Perfil → Carga de stock por ruta permite seleccionar ruta/fecha, buscar productos, agregar cantidades, revisar stock antes/después y confirmar en una transacción. No genera ventas, ingresos, deudas ni caja. Cada producto con saldo central (el antiguo saldo sin asignar, incluso si está agotado) descuenta de ese saldo. Un producto sin central recibe entrada directa a la ruta. No se inventa un saldo central. Entrada central es una operación administrativa explícita para mercancía nueva. Un cambio de saldo entre revisión y confirmación bloquea la carga. La fecha identifica la entrega; la cantidad queda disponible al confirmar, sin programación diferida.
+
+El sobrante se acumula entre días. Conteo / ajuste registra existencia final. Devolver sobrante retira la cantidad de la ruta y la devuelve al central, si existe, en la misma transacción; sin central registra la salida sin inventar uno. Se conserva motivo, administrador, fecha, productos y cantidades. Reintentos con la misma clave de operación no duplican cargas.
 
 Mientras un producto controlado no tenga existencias en la ruta del vendedor, no puede venderse. Los productos sin control de inventario siguen vendiéndose normalmente. La anulación devuelve el stock descontado a la ubicación original, aunque cambie la ruta del usuario. Las ventas anteriores a la migración que manejaban stock regresan al saldo sin asignar.
 
@@ -16,7 +22,7 @@ Los vendedores consultan únicamente sus ventas del día definido por `BUSINESS_
 
 Los medios electrónicos requieren referencia de texto (máximo 120 caracteres). Se preservan letras y ceros. Cambiar de medio limpia la referencia; efectivo y crédito no la guardan ni imprimen. Los registros históricos sin referencia siguen siendo válidos.
 
-Una venta a crédito exige cliente identificado y crea una deuda por el total original. El precio normal sigue siendo el precio de venta del POS: importar mayoristas no cambia automáticamente el precio de la venta ni clasifica al cliente como mayorista.
+Una venta a crédito exige seleccionar un cliente registrado y crea una deuda por el total original. No exige documento. Nombre y ciudad se mantienen; los documentos históricos se conservan. Personas con el mismo nombre tienen IDs y cuentas separadas, incluso al sincronizar clientes creados sin señal. El único precio del producto se utiliza para calcular la venta.
 
 `total_cents` representa ventas vigentes, incluyendo crédito. `sales_cash_cents`, `sales_electronic_cents` y `credit_cents` separan esas ventas. `collection_cash_cents` y `collection_electronic_cents` representan cobros posteriores de cartera. `cash_cents` y `electronic_cents` representan el flujo recibido neto de devoluciones reales, incluyendo cobros de cartera, sin sumar créditos. Una venta anulada se excluye de ventas; el dinero recibido permanece hasta registrar su salida real.
 
@@ -24,13 +30,13 @@ Al cerrar, efectivo esperado = base + flujo neto de efectivo. Se concilia electr
 
 ## Créditos y cartera
 
-En Perfil → Créditos y cartera se busca por nombre o identificación. Se ven facturas, saldo pendiente, abonos, receptor, caja, observaciones y movimientos cronológicos. Los abonos solo admiten efectivo o electrónico, monto positivo hasta el saldo y fecha/hora válidas en la zona del negocio. No se aceptan fechas futuras ni anteriores a las facturas pagadas.
+En Perfil → Créditos y cartera se busca por nombre. Se ven facturas, saldo pendiente, abonos, receptor, caja, observaciones y movimientos cronológicos. Los abonos solo admiten efectivo o electrónico, monto positivo hasta el saldo y fecha/hora válidas en la zona del negocio. No se aceptan fechas futuras ni anteriores a las facturas pagadas.
 
 Por defecto se paga la factura más antigua. También puede seleccionarse una factura; se muestra la distribución antes de confirmar. La API admite distribuciones explícitas entre varias facturas. Un abono no cambia el total de la venta y se aplica una sola vez mediante su referencia de operación.
 
 Se elige expresamente una caja abierta o recepción administrativa fuera de caja con motivo. No se asigna automáticamente una caja. El receptor autenticado queda registrado, aun cuando la caja pertenezca al vendedor. Fuera de caja el cobro reduce cartera y aparece en el extracto, pero no entra en un cierre de caja.
 
-El extracto PDF A4 incluye identificación del negocio y del cliente, periodo, saldo inicial, facturas, abonos, anulaciones/reasignaciones/devoluciones y saldo final. Los límites del periodo usan la zona del negocio.
+El extracto PDF A4 incluye identificación del negocio y del cliente, periodo, saldo inicial, facturas, abonos, anulaciones/reasignaciones/devoluciones y saldo final. Sin rango incluye todo el historial: desde la primera factura a crédito hasta el último movimiento de cartera, incluyendo una factura posterior al último abono. La generación se muestra por separado. Sin movimientos muestra un mensaje y no inventa fechas. Con rango incluye saldo anterior, movimientos del periodo y saldo final. Los límites y las fechas usan la zona del negocio.
 
 ## Anulaciones
 
@@ -42,13 +48,15 @@ El crédito anulado deja de tener deuda. Cada abono aplicado exige resolución e
 
 ## Importar Excel
 
-En Productos → Importar Excel se selecciona `.xlsx`, máximo 5 MB y 10.000 filas, con hoja Productos. Los encabezados se detectan por nombre en cualquier fila de la hoja; el archivo de referencia indica fila 5. No se lee ni aplica el precio normal, aunque contenga fórmulas o errores.
+En Productos → Importar Excel se selecciona `.xlsx`, máximo 5 MB y 10.000 filas, con hoja Productos. Detecta encabezados por nombre en cualquier fila. Descripción será el nombre y Precio de venta mayoristas será el único `price_cents` que usa el POS. Ignora completamente Precio de venta (COP), categoría y marca.
 
-Código se conserva como texto, incluyendo ceros; si Excel almacena un número con máscara `0000`, se respeta su representación. No se pueden recuperar ceros que Excel ya descartó. Se identifica únicamente por código. Si un ID del archivo coincide con el sistema pero el código no coincide, se marca conflicto para corregir en el catálogo; no se relaciona por nombre.
+Se reconoce una columna explícita de modalidad: Cómo se vende, Modalidad de venta, Unidad de venta, Unidad de medida, Unidad o Modalidad. Unidad/und/un y kilogramo/kg se reconocen; jamás se infiere desde el nombre. Si falta, se conserva la modalidad del producto existente y para los nuevos se completa en la vista previa, por fila o seleccionando varias y aplicando unidad/kg. No se confirma mientras una fila válida tenga modalidad pendiente. Productos con movimientos conservan su modalidad histórica.
 
-Para existentes se actualiza únicamente `wholesale_price_cents`. Nuevos requieren descripción, código, categoría, marca y mayorista válido; quedan borradores inactivos sin precio normal ni unidad hasta completarlos. Vacíos, texto no numérico, negativos, errores y fórmulas sin resultado numérico disponible se omiten. El precio cero requiere revisión explícita. Los códigos duplicados se marcan en todas sus filas.
+El código del Excel se guarda internamente como texto, respetando ceros iniciales y máscaras numéricas `0000`. No se exige en el formulario. Se identifica por código exacto o ID interno exacto cuando no hay código; nunca por similitud de nombre. Conflictos ID/código y duplicados se marcan. Sin código ni ID se crea un producto nuevo con ID automático y se avisa que futuras actualizaciones necesitan ese ID.
 
-La vista previa se conserva en servidor por una hora y pertenece al administrador que la generó. Confirmar comprueba que el código y precio anterior no hayan cambiado. Si cambiaron, revierte toda la aplicación y exige otra vista previa. Las filas inválidas se omiten y se informa el resultado descargable CSV. No se crean movimientos ni se cambian existencias. Confirmaciones repetidas no duplican productos ni importaciones.
+La vista previa muestra creaciones, precio actual/adicional anterior y precio único resultante, modalidades y errores. Nuevos válidos se crean activos con nombre, modalidad y precio, sin cantidades ni movimientos de inventario. Los existentes conservan actividad, inventario y código, y actualizan nombre, modalidad permitida y precio único. Vacíos, no numéricos, negativos, errores, fórmulas sin resultado numérico y precios cero se omiten sin sobrescribir precios.
+
+La vista previa dura una hora y pertenece a su administrador. Confirmar verifica que el producto no haya cambiado y revierte toda la operación ante conflictos. Las filas inválidas se omiten y se entrega CSV descargable. Reintentos no duplican la importación. Vistas previas del formato anterior deben volver a cargarse tras la actualización.
 
 ## Modo sin señal y dispositivos
 
@@ -63,7 +71,7 @@ La web y API se despliegan en Vercel y Railway. Android requiere compilar e inst
 - `npm test`: permisos, medianoche, precisión monetaria, referencias, cartera, abonos dentro/fuera de caja, distribución, cierres, anulaciones y sus ajustes/devoluciones/reasignaciones, concurrencia de stock, migración y errores de Excel.
 - `npm run check`: TypeScript.
 - `npm run test:e2e`: flujo existente y permisos de historial a seis anchos, con cambio de día sin señal.
-- `npm run test:e2e:operations`: pantallas nuevas, doble clic, PDF, importación y activación de borradores.
+- `npm run test:e2e:operations`: pantallas nuevas, doble clic, PDF, importación con precio único y modalidad por grupo.
 - `npm run export:web -w mobile` y `npm exec -w mobile -- expo export --platform android`: compilaciones.
 - `npm exec -w mobile -- expo install --check`: compatibilidad de Expo.
 

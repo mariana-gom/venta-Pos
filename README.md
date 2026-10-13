@@ -54,7 +54,7 @@ Navegación inferior de cinco pestañas: Inicio, Caja, **Vender** (al centro), C
 
 1. Administrador configura negocio (nombre, NIT, dirección, ciudad, teléfono y papel), plataformas y usuarios en Perfil, y productos/clientes en Catálogo.
 2. Vendedor inicia sesión y abre su caja con saldo inicial.
-3. En Vender selecciona o crea cliente, añade productos, ingresa unidades enteras o kg con hasta tres decimales, escoge efectivo, electrónico con número de referencia o crédito para un cliente identificado y confirma.
+3. En Vender selecciona o crea cliente, añade productos, ingresa unidades enteras o kg con hasta tres decimales, escoge efectivo, electrónico con número de referencia o crédito para un cliente registrado y confirma.
 4. La API calcula el total, conserva precios históricos, actualiza stock si está activado y registra venta/detalles/pago en una transacción.
 5. En el comprobante, abre/guarda, comparte o imprime el PDF. Una falla de impresión no revierte ni duplica la venta.
 6. Administrador entra en Caja, cuenta efectivo (incluido el saldo inicial), verifica pagos electrónicos, revisa diferencias y confirma el cierre definitivo.
@@ -86,7 +86,7 @@ PDF_OUTPUT_DIR=../output/pdf npm test -w server
 
 Usa HTTPS y un proxy de confianza para acceso fuera del desarrollo local, limita permisos del directorio de datos y no publiques `.env`, bases ni respaldos. Ejecuta la API como un servicio persistente para uso diario; el celular no es el servidor. SQLite es apropiado para esta instalación centralizada de pequeño negocio; mayor escala requerirá migrar el repositorio de datos a PostgreSQL.
 
-El catálogo admite stock opcional: vacío desactiva control; un valor activa existencias y descuenta cada venta. Ajustes administrativos quedan en auditoría. Se implementan crédito, cartera, anulaciones auditadas, inventario por ruta e importación de precios mayoristas. No se implementan compras, impuestos, facturación electrónica ni pagos mixtos. Los recibos son comprobantes comerciales.
+El catálogo solicita nombre, unidad/kg y un único precio. No captura stock inicial. Las cargas diarias se registran en Perfil → Carga de stock por ruta; conservan sobrantes y descuentan saldo central cuando existe. Los productos históricos sin inventario conservan su comportamiento. Ajustes y devoluciones explícitos quedan auditados. Se implementan crédito, cartera, anulaciones auditadas, inventario por ruta e importación del precio mayorista del Excel como único precio del POS. No se implementan compras, impuestos, facturación electrónica ni pagos mixtos. Los recibos son comprobantes comerciales.
 
 ## Documentación
 

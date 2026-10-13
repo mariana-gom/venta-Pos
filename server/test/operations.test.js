@@ -200,6 +200,6 @@ test('Extracto automático: primera factura y último movimiento, factura poster
   const ranged=statementPeriod(data,{from:period.to,to:period.to});assert.equal(ranged.initial,400000);assert.equal(ranged.final,900000);assert.equal(ranged.events.length,1);
   const pdf=await req('/accounts/'+customer.id+'/pdf');const {spawnSync}=await import('node:child_process'),text=spawnSync('pdftotext',['-','-'],{input:pdf,encoding:'utf8'});if(!text.error){assert.equal(text.status,0);assert.ok(text.stdout.includes(`Periodo: ${period.from} - ${period.to}`));assert.match(text.stdout,/Generado:/);}
   const empty=await req('/customers',{name:'Sin movimientos',city:'Bogotá'},'admin',201);const ep=statementPeriod(account(db,empty.id));assert.equal(ep.from,null);assert.equal(ep.to,null);
-  const emptyPdf=await req('/accounts/'+empty.id+'/pdf'),emptyText=spawnSync('pdftotext',['-','-'],{input:emptyPdf,encoding:'utf8'});if(!emptyText.error)assert.match(emptyText.stdout,/Sin movimientos de cartera/);
+  const emptyPdf=await req('/accounts/'+empty.id+'/pdf?from='+period.from+'&to='+period.to),emptyText=spawnSync('pdftotext',['-','-'],{input:emptyPdf,encoding:'utf8'});if(!emptyText.error)assert.match(emptyText.stdout,/Sin movimientos de cartera/);
  }finally{await f.close();}
 });
